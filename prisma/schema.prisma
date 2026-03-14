@@ -1,0 +1,109 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               String        @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  discord_id       String        @unique
+  discord_username String
+  discord_avatar   String?
+  discord_banner   String?       // <-- ADICIONADO AQUI
+  email            String?
+  role             String?       @default("user")
+  billing_setup    Json?         @default("{\"chave_pix\": \"\", \"instrucoes\": \"\", \"tipo_chave\": \"pix\", \"metodo_preferido\": \"pix\", \"nome_beneficiario\": \"\"}")
+  created_at       DateTime?     @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime?     @default(now()) @db.Timestamptz(6)
+  activity_logs    ActivityLog[]
+  grupos           Grupo[]
+  user_series      UserSerie[]
+  vendas           Venda[]
+
+  @@map("users")
+}
+
+model Grupo {
+  id          String      @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id     String      @db.Uuid
+  nome        String
+  descricao   String?
+  created_at  DateTime?   @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime?   @default(now()) @db.Timestamptz(6)
+  channel_id  String?     @unique
+  user        User        @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user_series UserSerie[]
+  vendas      Venda[]
+
+  @@map("grupos")
+}
+
+model Produto {
+  id               String      @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  nome             String      @unique
+  descricao        String?
+  imagem_url       String?
+  link_serie       String?
+  plataforma       String?     @db.VarChar(255)
+  created_at       DateTime?   @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime?   @default(now()) @db.Timestamptz(6)
+  nome_alternativo String?
+  user_series      UserSerie[]
+  vendas           Venda[]
+
+  @@map("produtos")
+}
+
+model UserSerie {
+  id         String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id    String    @db.Uuid
+  produto_id String    @db.Uuid
+  grupo_id   String    @db.Uuid
+  preco      Decimal   @default(0.00) @db.Decimal(10, 2)
+  ativo      Boolean?  @default(true)
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at DateTime? @default(now()) @db.Timestamptz(6)
+  grupo      Grupo     @relation(fields: [grupo_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  produto    Produto   @relation(fields: [produto_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user       User      @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([user_id, produto_id], name: "unique_user_produto", map: "unique_user_produto")
+  @@map("user_series")
+}
+
+model ActivityLog {
+  id          String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id     String    @db.Uuid
+  action      String
+  entity_type String
+  entity_id   String?   @db.Uuid
+  details     Json?     @default("{}")
+  created_at  DateTime? @default(now()) @db.Timestamptz(6)
+  user        User      @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("activity_logs")
+}
+
+model Venda {
+  id              String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id         String    @db.Uuid
+  produto_id      String    @db.Uuid
+  grupo_id        String?   @db.Uuid
+  quantidade      Int
+  preco_unitario  Decimal   @db.Decimal(10, 2)
+  preco_total     Decimal   @db.Decimal(10, 2)
+  cliente_nome    String?   // <-- ADICIONADO PARA O RELATÓRIO
+  cliente_contato String?   // <-- ADICIONADO PARA O RELATÓRIO
+  observacoes     String?
+  data_venda      DateTime? @default(now()) @db.Timestamptz(6)
+  created_at      DateTime? @default(now()) @db.Timestamptz(6)
+  grupo           Grupo?    @relation(fields: [grupo_id], references: [id], onUpdate: NoAction)
+  produto         Produto   @relation(fields: [produto_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user            User      @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([user_id, produto_id, grupo_id, quantidade], name: "unique_venda_capitulo", map: "unique_venda_capitulo")
+  @@map("vendas")
+}

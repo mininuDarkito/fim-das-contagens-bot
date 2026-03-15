@@ -95,8 +95,6 @@ model Venda {
   quantidade      Int
   preco_unitario  Decimal   @db.Decimal(10, 2)
   preco_total     Decimal   @db.Decimal(10, 2)
-  cliente_nome    String?   // <-- ADICIONADO PARA O RELATÓRIO
-  cliente_contato String?   // <-- ADICIONADO PARA O RELATÓRIO
   observacoes     String?
   data_venda      DateTime? @default(now()) @db.Timestamptz(6)
   created_at      DateTime? @default(now()) @db.Timestamptz(6)

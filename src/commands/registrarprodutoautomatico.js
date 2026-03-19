@@ -6,11 +6,11 @@ import fs from "fs";
 export default {
   data: new SlashCommandBuilder()
     .setName("registrarprodutoautomatico")
-    .setDescription("Regista um produto via link com normalização e scrapers.")
+    .setDescription("ADMIN: Regista um produto global no grupo atual via scraper.")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
     .addStringOption(o => 
       o.setName("plataforma")
-        .setDescription("Escolha a plataforma")
+        .setDescription("Escolha o scraper")
         .setAutocomplete(true)
         .setRequired(true)
     )
@@ -39,7 +39,9 @@ export default {
     const plataformaSlug = interaction.options.getString("plataforma");
     const valor = interaction.options.getNumber("valor");
 
-    // --- 1. NORMALIZAÇÃO DE LINK (AC.QQ) ---
+    await interaction.deferReply({ ephemeral: true });
+
+    // --- 1. NORMALIZAÇÃO DE LINK (Ex: AC.QQ) ---
     if (plataformaSlug === 'acqq' || url.includes('ac.qq.com')) {
       if (url.includes('ComicView')) {
         const matchId = url.match(/\/id\/(\d+)/);
@@ -50,61 +52,76 @@ export default {
     }
 
     const pathScript = path.join(process.cwd(), `src/scrapers/${plataformaSlug}.js`);
-    await interaction.deferReply({ ephemeral: true });
-
     if (!fs.existsSync(pathScript)) {
       return interaction.editReply(`❌ Scraper não encontrado para \`${plataformaSlug}\`.`);
     }
 
     try {
+      // 2. BUSCA O GRUPO GLOBAL
+      const grupo = await prisma.grupo.findUnique({ where: { channel_id: interaction.channelId } });
+      if (!grupo) return interaction.editReply("❌ Este canal não está registrado como um Grupo Global.");
+
+      // 3. EXECUÇÃO DO SCRAPER
       const scraperModule = await import(`file://${pathScript}`);
       const scrapeFunc = scraperModule.scrape || (scraperModule.default && scraperModule.default.scrape) || scraperModule.default;
 
       if (typeof scrapeFunc !== 'function') {
-        throw new Error(`O arquivo ${plataformaSlug}.js não exporta uma função 'scrape' válida.`);
+        throw new Error(`Scraper inválido.`);
       }
 
       const metadata = await scrapeFunc(url);
-
       if (!metadata || !metadata.nome) {
-        return interaction.editReply("❌ O scraper não conseguiu extrair os dados da obra.");
+        return interaction.editReply("❌ O scraper falhou ao extrair dados.");
       }
 
-      const grupo = await prisma.grupo.findUnique({ where: { channel_id: interaction.channelId } });
-      if (!grupo) return interaction.editReply("❌ Este canal não é um grupo registado.");
-
+      // 4. UPSERT DO PRODUTO (Tabela Global de Obras)
       const produto = await prisma.produto.upsert({
         where: { nome: metadata.nome },
         update: {
           plataforma: plataformaSlug.replace(/-/g, ' '),
-          descricao: metadata.descricao || "Sem descrição disponível.",
+          descricao: metadata.descricao || "Sem descrição.",
           imagem_url: metadata.imagem_url, 
           link_serie: metadata.link_serie || url
         },
         create: {
           nome: metadata.nome,
           plataforma: plataformaSlug.replace(/-/g, ' '),
-          descricao: metadata.descricao || "Sem descrição disponível.",
+          descricao: metadata.descricao || "Sem descrição.",
           imagem_url: metadata.imagem_url,
           link_serie: metadata.link_serie || url
         }
       });
 
+      // 5. VÍNCULO DA OBRA AO GRUPO (Tabela UserSerie)
+      // Usamos o user_id do DONO do grupo (você) para definir o preço global deste canal
       await prisma.userSerie.upsert({
-        where: { unique_user_produto: { user_id: grupo.user_id, produto_id: produto.id } },
-        update: { preco: valor, grupo_id: grupo.id, ativo: true },
-        create: { user_id: grupo.user_id, produto_id: produto.id, grupo_id: grupo.id, preco: valor, ativo: true }
+        where: { 
+          unique_user_produto: { 
+            user_id: grupo.user_id, 
+            produto_id: produto.id 
+          } 
+        },
+        update: { 
+          preco: valor, 
+          grupo_id: grupo.id, 
+          ativo: true 
+        },
+        create: { 
+          user_id: grupo.user_id, 
+          produto_id: produto.id, 
+          grupo_id: grupo.id, 
+          preco: valor, 
+          ativo: true 
+        }
       });
 
-      const isBase64 = metadata.imagem_url?.startsWith('data:');
-
       await interaction.editReply({
-        content: `✅ **Registo Concluído!**\n📖 **Obra:** ${metadata.nome}\n🌐 **Plataforma:** ${plataformaSlug.toUpperCase()}\n🖼️ **Imagem:** ${isBase64 ? 'Convertida para Base64 (Anti-Hotlink)' : 'Link Direto'}\n💰 **Valor:** R$ ${valor.toFixed(2)}`
+        content: `✅ **Obra Registrada no Grupo Global!**\n📖 **Nome:** ${metadata.nome}\n💰 **Preço Unitário:** R$ ${valor.toFixed(2)}\n📍 **Canal:** ${grupo.nome}`
       });
 
     } catch (error) {
       console.error(error);
-      interaction.editReply(`❌ Erro técnico: ${error.message}`);
+      interaction.editReply(`❌ Erro: ${error.message}`);
     }
   }
 };

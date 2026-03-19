@@ -12,52 +12,52 @@ model User {
   discord_id       String        @unique
   discord_username String
   discord_avatar   String?
-  discord_banner   String?       // <-- ADICIONADO AQUI
   email            String?
   role             String?       @default("user")
   billing_setup    Json?         @default("{\"chave_pix\": \"\", \"instrucoes\": \"\", \"tipo_chave\": \"pix\", \"metodo_preferido\": \"pix\", \"nome_beneficiario\": \"\"}")
   created_at       DateTime?     @default(now()) @db.Timestamptz(6)
   updated_at       DateTime?     @default(now()) @db.Timestamptz(6)
+  discord_banner   String?
   activity_logs    ActivityLog[]
   grupos           Grupo[]
-  user_series      UserSerie[]
+  user_series      UserSeries[]
   vendas           Venda[]
 
   @@map("users")
 }
 
 model Grupo {
-  id          String      @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  user_id     String      @db.Uuid
+  id          String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id     String       @db.Uuid
   nome        String
   descricao   String?
-  created_at  DateTime?   @default(now()) @db.Timestamptz(6)
-  updated_at  DateTime?   @default(now()) @db.Timestamptz(6)
-  channel_id  String?     @unique
-  user        User        @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  user_series UserSerie[]
+  created_at  DateTime?    @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime?    @default(now()) @db.Timestamptz(6)
+  channel_id  String?      @unique
+  user        User         @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user_series UserSeries[]
   vendas      Venda[]
 
   @@map("grupos")
 }
 
 model Produto {
-  id               String      @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  nome             String      @unique
+  id               String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  nome             String       @unique
   descricao        String?
   imagem_url       String?
   link_serie       String?
-  plataforma       String?     @db.VarChar(255)
-  created_at       DateTime?   @default(now()) @db.Timestamptz(6)
-  updated_at       DateTime?   @default(now()) @db.Timestamptz(6)
+  plataforma       String?      @db.VarChar(255)
+  created_at       DateTime?    @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime?    @default(now()) @db.Timestamptz(6)
   nome_alternativo String?
-  user_series      UserSerie[]
+  user_series      UserSeries[]
   vendas           Venda[]
 
   @@map("produtos")
 }
 
-model UserSerie {
+model UserSeries {
   id         String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
   user_id    String    @db.Uuid
   produto_id String    @db.Uuid
@@ -88,25 +88,24 @@ model ActivityLog {
 }
 
 model Venda {
-  id              String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  user_id         String    @db.Uuid
-  produto_id      String    @db.Uuid
-  grupo_id        String?   @db.Uuid
-  quantidade      Int
-  preco_unitario  Decimal   @db.Decimal(10, 2)
-  preco_total     Decimal   @db.Decimal(10, 2)
-  observacoes     String?
-  data_venda      DateTime? @default(now()) @db.Timestamptz(6)
-  
-  // Auditoria
-  created_at      DateTime? @default(now()) @db.Timestamptz(6)
-  updated_at      DateTime? @default(now()) @updatedAt @db.Timestamptz(6)
+  id                 String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id            String    @db.Uuid
+  produto_id         String    @db.Uuid
+  grupo_id           String?   @db.Uuid
+  quantidade         Int
+  preco_unitario     Decimal   @db.Decimal(10, 2)
+  preco_total        Decimal   @db.Decimal(10, 2)
+  observacoes        String?
+  data_venda         DateTime? @default(now()) @db.Timestamptz(6)
+  created_at         DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime? @default(now()) @db.Timestamptz(6)
+  capitulos_detalhes String?
+  lock_user          Boolean?  @default(false)
+  lock_admin         Boolean?  @default(false)
+  grupo              Grupo?    @relation(fields: [grupo_id], references: [id], onUpdate: NoAction)
+  produto            Produto   @relation(fields: [produto_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user               User      @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  // Relações
-  grupo           Grupo?    @relation(fields: [grupo_id], references: [id], onUpdate: NoAction)
-  produto         Produto   @relation(fields: [produto_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  user            User      @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
-  @@unique([user_id, produto_id, grupo_id, quantidade], name: "unique_venda_capitulo")
+  @@unique([user_id, produto_id, grupo_id, quantidade], name: "vendas_unique_constraint")
   @@map("vendas")
 }

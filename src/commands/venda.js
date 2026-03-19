@@ -21,17 +21,29 @@ export default {
   async execute(interaction) {
     const produtoNome = interaction.options.getString("produto");
     const numeroInput = interaction.options.getString("numero");
+    const discordUserId = interaction.user.id;
 
     // Uso de MessageFlags para evitar o warning de depreciação
     await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
     try {
+      // 1. Identifica QUEM está vendendo (Busca o usuário pelo Discord ID)
+      const vendedor = await prisma.user.findUnique({
+        where: { discord_id: discordUserId }
+      });
+
+      if (!vendedor) {
+        return interaction.editReply("❌ Você não possui uma conta vinculada. Acesse o dashboard no site primeiro.");
+      }
+
+      // 2. Identifica o Grupo Global vinculado a este canal
       const grupo = await prisma.grupo.findUnique({
         where: { channel_id: interaction.channelId }
       });
 
-      if (!grupo) return interaction.editReply("❌ Este canal não é um grupo registrado.");
+      if (!grupo) return interaction.editReply("❌ Este canal não está registrado como um grupo de vendas global.");
 
+      // 3. Busca a configuração da obra neste grupo específico
       const configuracao = await prisma.userSerie.findFirst({
         where: { 
           grupo_id: grupo.id,
@@ -40,8 +52,9 @@ export default {
         include: { produto: true }
       });
 
-      if (!configuracao) return interaction.editReply(`❌ A obra **${produtoNome}** não está vinculada a este grupo.`);
+      if (!configuracao) return interaction.editReply(`❌ A obra **${produtoNome}** não está ativa neste grupo.`);
 
+      // --- Lógica de Processamento de Números ---
       let numeros = [];
       if (numeroInput.includes("-")) {
         const [inicio, fim] = numeroInput.split("-").map(n => parseInt(n.trim()));
@@ -53,8 +66,13 @@ export default {
         numeros.push(n);
       }
 
+      // Verifica duplicatas globais no grupo para esta obra
       const existentes = await prisma.venda.findMany({
-        where: { grupo_id: grupo.id, produto_id: configuracao.produto_id, quantidade: { in: numeros } },
+        where: { 
+          grupo_id: grupo.id, 
+          produto_id: configuracao.produto_id, 
+          quantidade: { in: numeros } 
+        },
         select: { quantidade: true }
       });
 
@@ -62,44 +80,45 @@ export default {
       const paraCriar = numeros.filter(n => !jaVendidos.includes(n));
       const precoUnit = Number(configuracao.preco);
 
+      // 4. Criação das Vendas vinculadas ao VENDEDOR (Individual) e ao GRUPO (Global)
       if (paraCriar.length > 0) {
         await prisma.$transaction(
           paraCriar.map(n => prisma.venda.create({
             data: {
-              user_id: grupo.user_id,
+              user_id: vendedor.id, // O crédito vai para quem executou o comando
               produto_id: configuracao.produto_id,
-              grupo_id: grupo.id,
+              grupo_id: grupo.id,    // Registro no grupo global do canal
               quantidade: n,
               preco_unitario: precoUnit,
               preco_total: precoUnit,
-              observacoes: `Vendedor: ${interaction.user.tag}`,
+              observacoes: `Vendedor: ${interaction.user.tag} (via Bot)`,
               data_venda: new Date()
             }
           }))
         );
       }
 
+      // --- Resposta Visual ---
       const totalFin = paraCriar.length * precoUnit;
       const embed = new EmbedBuilder()
         .setTitle("🛒 Venda Processada")
-        .setDescription(`Obra: **${configuracao.produto.nome}**`)
+        .setDescription(`Obra: **${configuracao.produto.nome}**\nGrupo: **${grupo.nome}**`)
         .setColor(paraCriar.length > 0 ? "#00FF00" : "#FFA500")
         .addFields(
-          { name: "🔢 Capítulos", value: paraCriar.length > 0 ? paraCriar.join(", ") : "Nenhum novo" },
-          { name: "💰 Valor Total", value: `R$ ${totalFin.toFixed(2)}`, inline: true }
+          { name: "👤 Vendedor", value: interaction.user.username, inline: true },
+          { name: "💰 Total", value: `R$ ${totalFin.toFixed(2)}`, inline: true },
+          { name: "🔢 Capítulos", value: paraCriar.length > 0 ? paraCriar.join(", ") : "Nenhum novo registrado" }
         )
         .setTimestamp();
 
       if (jaVendidos.length > 0) {
-        embed.addFields({ name: "⚠️ Já Vendidos", value: jaVendidos.join(", ") });
+        embed.addFields({ name: "⚠️ Já Vendidos neste grupo", value: jaVendidos.join(", ") });
       }
 
       return interaction.editReply({ embeds: [embed] });
 
     } catch (error) {
-      // Se a interação morreu no meio do caminho, apenas logamos
-      if (error.code === 10062) return console.warn("Interação expirou durante o processamento da venda.");
-      
+      if (error.code === 10062) return console.warn("Interação expirou.");
       console.error(error);
       return interaction.editReply(`❌ Erro técnico: ${error.message}`);
     }

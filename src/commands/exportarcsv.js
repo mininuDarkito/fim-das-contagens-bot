@@ -1,70 +1,68 @@
-import { SlashCommandBuilder, AttachmentBuilder } from "discord.js";
-import { Parser } from "json2csv"; // precisamos instalar json2csv
-
-
+import { SlashCommandBuilder, AttachmentBuilder, PermissionFlagsBits } from "discord.js";
+import prisma from "../../prisma/client.js";
 
 export default {
   data: new SlashCommandBuilder()
     .setName("exportarcsv")
-    .setDescription("Exporta todas as vendas do grupo atual em CSV."),
+    .setDescription("ADMIN: Exporta o backup bruto de TODAS as vendas deste canal.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   async execute(interaction) {
-    // buscar grupo + vendas + produto
-    const grupo = await prisma.grupo.findUnique({
-      where: { channelId: interaction.channelId },
-      include: {
-        vendas: {
-          include: { produto: true }
-        }
-      }
-    });
-
-    if (!grupo) {
-      return interaction.reply({
-        content: "❌ Este canal não é um grupo.",
-        ephemeral: true
-      });
-    }
-
-    if (grupo.vendas.length === 0) {
-      return interaction.reply({
-        content: "Nenhuma venda registrada ainda.",
-        ephemeral: true
-      });
-    }
-
-    // preparar dados para CSV
-    const vendasCSV = grupo.vendas.map(venda => ({
-      Produto: venda.produto?.name || "Desconhecido",
-      Numero: venda.numero,
-      Plataforma: venda.produto?.platform || "Desconhecida",
-      Valor: venda.produto?.valor?.toFixed(2) || "0.00",
-      Comprador: venda.buyer,
-      NomeDoComprador: venda.buyerName || "Desconecido"
-    }));
+    await interaction.deferReply({ ephemeral: true });
 
     try {
-      // gerar CSV
-      const parser = new Parser({ fields: ["Produto", "Numero",  "Plataforma", "Valor", "Comprador", "NomeDoComprador"] });
-      const csv = parser.parse(vendasCSV);
+      // 1. Busca Grupo + Vendas + Produto + Vendedor (User)
+      // Note que usamos 'channel_id' (snake_case) conforme seu Schema
+      const grupo = await prisma.grupo.findUnique({
+        where: { channel_id: interaction.channelId },
+        include: {
+          vendas: {
+            include: { 
+              produto: true,
+              user: true 
+            },
+            orderBy: { data_venda: 'desc' }
+          }
+        }
+      });
 
-      // criar attachment
+      if (!grupo) {
+        return interaction.editReply("❌ Este canal não é um grupo registrado.");
+      }
+
+      if (!grupo.vendas || grupo.vendas.length === 0) {
+        return interaction.editReply("📭 Não existem vendas registradas neste grupo para exportar.");
+      }
+
+      // 2. Preparar cabeçalho e dados para CSV manual (evita instalar json2csv)
+      // \ufeff é o BOM para o Excel abrir com acentos corretamente
+      let csv = "\ufeffID_Venda;Data;Vendedor;Obra;Capitulo;Plataforma;Preco_Unit;Preco_Total\n";
+
+      grupo.vendas.forEach(v => {
+        const data = v.data_venda ? v.data_venda.toISOString().split('T')[0] : "N/A";
+        const vendedor = v.user?.discord_username || "Desconhecido";
+        const obra = v.produto?.nome?.replace(/;/g, "-") || "Excluída";
+        const plataforma = v.produto?.plataforma?.toUpperCase() || "N/A";
+        const valorUnit = Number(v.preco_unitario || 0).toFixed(2);
+        const valorTotal = Number(v.preco_total || 0).toFixed(2);
+
+        csv += `${v.id};${data};${vendedor};${obra};${v.quantidade};${plataforma};${valorUnit};${valorTotal}\n`;
+      });
+
+      // 3. Gerar o arquivo (Attachment)
       const buffer = Buffer.from(csv, "utf-8");
-      const attachment = new AttachmentBuilder(buffer, { name: `vendas_${grupo.nome ?? grupo.channelId}.csv` });
+      const nomeArquivo = `backup_vendas_${grupo.nome.replace(/\s+/g, '_').toLowerCase()}.csv`;
+      const attachment = new AttachmentBuilder(buffer, { name: nomeArquivo });
 
-      // enviar
-      await interaction.reply({
-        content: `📄 CSV de vendas do grupo **${grupo.nome ?? grupo.channelId}**`,
-        files: [attachment],
-        ephemeral: true
+      // 4. Enviar
+      await interaction.editReply({
+        content: `📄 **Backup Gerado!**\nForam exportadas **${grupo.vendas.length}** linhas de vendas do grupo **${grupo.nome}**.`,
+        files: [attachment]
       });
 
     } catch (error) {
-      console.error("Erro ao exportar CSV:", error);
-      await interaction.reply({
-        content: "❌ Ocorreu um erro ao gerar o CSV.",
-        ephemeral: true
-      });
+      console.error("❌ Erro ao exportar CSV bruto:", error);
+      await interaction.editReply(`❌ Erro técnico: ${error.message}`);
     }
   }
 };

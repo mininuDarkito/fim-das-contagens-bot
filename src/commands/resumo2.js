@@ -4,10 +4,10 @@ import prisma from "../../prisma/client.js";
 export default {
   data: new SlashCommandBuilder()
     .setName("resumo2")
-    .setDescription("Gera um arquivo CSV com o resumo de vendas do grupo.")
+    .setDescription("ADMIN: Gera um CSV detalhado com as vendas globais deste canal.")
     .addStringOption(option =>
       option.setName("mes")
-        .setDescription("Selecione o mês do relatório (Padrão: Mês atual)")
+        .setDescription("Selecione o mês do relatório")
         .setRequired(false)
         .addChoices(
           { name: 'Janeiro', value: '0' },
@@ -33,87 +33,82 @@ export default {
     try {
       // 1. Lógica de Datas
       const agora = new Date();
-      let dataInicio, dataFim;
       let filtroData = {};
+      let nomeMes = "Mês Atual";
 
-      if (mesEscolhido && mesEscolhido !== 'all') {
+      if (mesEscolhido !== 'all') {
         const anoAtual = agora.getFullYear();
-        const mesInt = parseInt(mesEscolhido);
+        const mesInt = mesEscolhido ? parseInt(mesEscolhido) : agora.getMonth();
         
-        dataInicio = new Date(anoAtual, mesInt, 1);
-        dataFim = new Date(anoAtual, mesInt + 1, 0, 23, 59, 59); // Último segundo do mês
-        
-        filtroData = {
-          data_venda: {
-            gte: dataInicio,
-            lte: dataFim
-          }
-        };
-      } else if (!mesEscolhido) {
-        // Se não escolher nada, pega o mês atual por padrão
-        dataInicio = new Date(agora.getFullYear(), agora.getMonth(), 1);
-        dataFim = new Date(agora.getFullYear(), agora.getMonth() + 1, 0, 23, 59, 59);
+        const dataInicio = new Date(anoAtual, mesInt, 1);
+        const dataFim = new Date(anoAtual, mesInt + 1, 0, 23, 59, 59);
         
         filtroData = {
-          data_venda: {
-            gte: dataInicio,
-            lte: dataFim
-          }
+          data_venda: { gte: dataInicio, lte: dataFim }
         };
+        nomeMes = dataInicio.toLocaleString('pt-BR', { month: 'long' });
+      } else {
+        nomeMes = "Histórico Completo";
       }
 
-      // 2. Buscar no Banco com o Filtro
+      // 2. Busca o Grupo e as Vendas (Incluindo o Vendedor/User)
       const grupo = await prisma.grupo.findUnique({
         where: { channel_id: interaction.channelId },
         include: {
           vendas: {
-            where: filtroData, // Aplica o filtro de data aqui
-            include: { produto: true },
+            where: filtroData,
+            include: { 
+              produto: true,
+              user: true // ADICIONADO: Para saber quem vendeu
+            },
             orderBy: { data_venda: 'asc' }
           }
         }
       });
 
       if (!grupo || !grupo.vendas || grupo.vendas.length === 0) {
-        const periodo = mesEscolhido === 'all' ? "no histórico" : "neste mês";
-        return interaction.editReply(`❌ Nenhuma venda encontrada para gerar o relatório ${periodo}.`);
+        return interaction.editReply(`❌ Nenhuma venda encontrada para **${nomeMes}** neste canal.`);
       }
 
-      // 3. Gerar CSV
-      let csvContent = "\ufeffNumero;Produto;Data;Valor\n";
+      // 3. Gerar CSV Otimizado para Contabilidade
+      // Adicionada a coluna "Vendedor"
+      let csvContent = "\ufeffVendedor;Produto;Capitulo;Data;Valor\n";
       let totalGeral = 0;
 
       grupo.vendas.forEach(venda => {
-        const numero = venda.quantidade;
+        const vendedor = venda.user?.discord_username || "Desconhecido";
         const produto = venda.produto?.nome || "Excluído";
+        const capitulo = venda.quantidade;
         const data = venda.data_venda ? venda.data_venda.toLocaleDateString('pt-BR') : "N/A";
         const valor = Number(venda.preco_total || 0);
 
         totalGeral += valor;
-        csvContent += `${numero};${produto.replace(/;/g, ',')};${data};${valor.toFixed(2)}\n`;
+        
+        // Limpeza simples para evitar que ";" no nome quebre o CSV
+        csvContent += `${vendedor};${produto.replace(/;/g, '-')};${capitulo};${data};${valor.toFixed(2).replace('.', ',')}\n`;
       });
 
-      // 4. Envio
+      // 4. Preparação do Arquivo e Resposta
       const buffer = Buffer.from(csvContent, "utf-8");
-      const nomeMes = mesEscolhido === 'all' ? "Completo" : (dataInicio ? dataInicio.toLocaleString('pt-BR', { month: 'long' }) : "Atual");
-      
-      const attachment = new AttachmentBuilder(buffer, { name: `resumo_${nomeMes.toLowerCase()}_${grupo.nome}.csv` });
+      const fileName = `relatorio_${nomeMes.toLowerCase().replace(/ /g, '_')}_${grupo.nome.toLowerCase().replace(/ /g, '_')}.csv`;
+      const attachment = new AttachmentBuilder(buffer, { name: fileName });
 
       const embed = new EmbedBuilder()
-        .setTitle(`📊 Relatório Financeiro: ${grupo.nome}`)
-        .setDescription(`Período: **${nomeMes.toUpperCase()}**`)
+        .setTitle(`📊 Relatório Consolidado: ${grupo.nome}`)
+        .setDescription(`Resumo das atividades do período: **${nomeMes.toUpperCase()}**`)
         .addFields(
-          { name: "Total do Período", value: `**R$ ${totalGeral.toFixed(2)}**`, inline: true },
-          { name: "Vendas", value: `${grupo.vendas.length} itens`, inline: true }
+          { name: "💰 Total Bruto", value: `**R$ ${totalGeral.toFixed(2)}**`, inline: true },
+          { name: "📦 Itens Vendidos", value: `${grupo.vendas.length} capítulos`, inline: true }
         )
-        .setColor("Green")
+        .setFooter({ text: "Relatório gerado para conferência administrativa" })
+        .setColor("#2ecc71")
         .setTimestamp();
 
       await interaction.editReply({ embeds: [embed], files: [attachment] });
 
     } catch (error) {
-      console.error(error);
-      interaction.editReply("❌ Erro ao processar o relatório financeiro.");
+      console.error("❌ Erro ao gerar resumo CSV:", error);
+      interaction.editReply("❌ Erro interno ao processar o arquivo CSV.");
     }
   }
 };

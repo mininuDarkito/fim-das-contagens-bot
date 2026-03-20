@@ -66,11 +66,13 @@ model UserSeries {
   ativo      Boolean?  @default(true)
   created_at DateTime? @default(now()) @db.Timestamptz(6)
   updated_at DateTime? @default(now()) @db.Timestamptz(6)
+  
   grupo      Grupo     @relation(fields: [grupo_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   produto    Produto   @relation(fields: [produto_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   user       User      @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  @@unique([user_id, produto_id], name: "unique_user_produto", map: "unique_user_produto")
+  // Atualizado conforme constraint 'unique_user_produto_grupo' do dump
+  @@unique([user_id, produto_id, grupo_id], name: "unique_user_produto_grupo")
   @@map("user_series")
 }
 
@@ -102,10 +104,12 @@ model Venda {
   capitulos_detalhes String?
   lock_user          Boolean?  @default(false)
   lock_admin         Boolean?  @default(false)
-  grupo              Grupo?    @relation(fields: [grupo_id], references: [id], onUpdate: NoAction)
+  
+  grupo              Grupo?    @relation(fields: [grupo_id], references: [id], onUpdate: NoAction, onDelete: SetNull)
   produto            Produto   @relation(fields: [produto_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   user               User      @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  @@unique([user_id, produto_id, grupo_id, quantidade], name: "vendas_unique_constraint")
+  // Atualizado conforme constraint 'vendas_user_id_produto_id_grupo_id_quantidade_key' do dump
+  @@unique([user_id, produto_id, grupo_id, quantidade], name: "vendas_user_id_produto_id_grupo_id_quantidade_key")
   @@map("vendas")
 }

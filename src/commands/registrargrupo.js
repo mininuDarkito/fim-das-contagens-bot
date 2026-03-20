@@ -1,15 +1,14 @@
-import { SlashCommandBuilder, PermissionFlagsBits } from "discord.js";
+import { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } from "discord.js";
 import prisma from "../../prisma/client.js";
 
 export default {
   data: new SlashCommandBuilder()
     .setName("registrargrupo")
     .setDescription("ADMIN: Registra este canal como um Grupo Global de vendas.")
-    // Garante que apenas quem tem permissão de Administrador no servidor veja o comando
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addStringOption(opt => 
       opt.setName("nome")
-        .setDescription("Nome identificador do grupo (Ex: Solo Leveling - Oficial)")
+        .setDescription("Nome identificador do grupo (Ex: Luna Toons - Oficial)")
         .setRequired(true)
     ),
 
@@ -20,49 +19,67 @@ export default {
     await interaction.deferReply({ ephemeral: true });
 
     try {
-      // 1. Validação de conta do Admin no banco
+      // 1. Validação do Admin no Banco (Verifica existência e role)
       const admin = await prisma.user.findUnique({ 
         where: { discord_id: interaction.user.id } 
       });
 
       if (!admin) {
-        return interaction.editReply("❌ Erro: Seu usuário de administrador não foi encontrado no banco de dados do site.");
+        return interaction.editReply("❌ **Erro de Acesso:** Seu usuário não foi encontrado no banco de dados. Cadastre-se no site primeiro.");
       }
 
-      // 2. Registro ou Atualização do Grupo Global
-      // O channel_id é @unique, então o upsert garante que cada canal seja apenas UM grupo.
+      if (admin.role !== 'admin') {
+        return interaction.editReply("❌ **Permissão Negada:** Apenas usuários com role 'admin' no banco de dados podem registrar grupos globais.");
+      }
+
+      // 2. Registro ou Atualização (Upsert) do Grupo Global
       const grupo = await prisma.grupo.upsert({
         where: { channel_id: channelId },
         update: { 
           nome: nome,
-          // Opcional: atualizar quem foi o último admin a mexer no grupo
-          user_id: admin.id 
+          updated_at: new Date()
         },
         create: {
           channel_id: channelId,
           nome: nome,
-          user_id: admin.id // Vincula você como o criador do mapeamento
+          user_id: admin.id, // O admin que registrou se torna o 'owner' do grupo no banco
         }
       });
 
-      // 3. Resposta de sucesso
-      return interaction.editReply({
-        content: `✅ **Grupo Global Registrado!**\n\n` +
-                 `• **Nome:** ${grupo.nome}\n` +
-                 `• **Canal ID:** \`${grupo.channel_id}\`\n` +
-                 `• **Status:** Ativo para vendas individuais.\n\n` +
-                 `*Agora qualquer usuário cadastrado pode usar /venda neste canal.*`
+      // 3. Registrar no Log de Atividades
+      await prisma.activityLog.create({
+        data: {
+          user_id: admin.id,
+          action: "register_global_group",
+          entity_type: "grupo",
+          entity_id: grupo.id,
+          details: { channel_id: channelId, group_name: nome }
+        }
       });
+
+      // 4. Resposta visual elegante com Embed
+      const embed = new EmbedBuilder()
+        .setTitle("✅ Grupo Global Configurado")
+        .setColor("#00FF7F") // Verde Primavera (Nexus Style)
+        .setDescription(`Este canal foi mapeado com sucesso no sistema global.`)
+        .addFields(
+          { name: "🏷️ Identificador", value: `**${grupo.nome}**`, inline: true },
+          { name: "🆔 Channel ID", value: `\`${grupo.channel_id}\``, inline: true },
+          { name: "🛡️ Registrado por", value: `${interaction.user.username}`, inline: false }
+        )
+        .setFooter({ text: "Yakuza Raws v3.0 • Sistema de Grupos Globais" })
+        .setTimestamp();
+
+      return interaction.editReply({ embeds: [embed] });
 
     } catch (error) {
       console.error("❌ Erro no registrargrupo:", error);
       
-      // Tratamento de erro específico para colunas faltantes ou restrições de banco
       if (error.code === 'P2002') {
-        return interaction.editReply("❌ Erro: Este canal já está vinculado a outro grupo.");
+        return interaction.editReply("❌ **Erro de Conflito:** Este canal já está registrado sob outro nome no sistema.");
       }
 
-      return interaction.editReply(`❌ Erro técnico ao registrar grupo: ${error.message}`);
+      return interaction.editReply(`❌ **Erro Interno:** Não foi possível salvar no banco. Verifique os logs do bot.`);
     }
   }
 };

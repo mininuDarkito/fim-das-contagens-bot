@@ -1,11 +1,10 @@
-import { SlashCommandBuilder, PermissionFlagsBits } from "discord.js";
+import { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } from "discord.js";
 import prisma from "../../prisma/client.js";
 
 export default {
   data: new SlashCommandBuilder()
     .setName("registrarproduto")
-    .setDescription("ADMIN: Registra manualmente uma obra neste grupo global.")
-    // Apenas Admins podem definir preços e produtos no grupo global
+    .setDescription("ADMIN: Registra ou vincula uma obra a este grupo global.")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
     .addStringOption(o => o.setName("plataforma").setDescription("Ex: Kakao, Ridi, Lezhin").setRequired(true))
     .addStringOption(o => o.setName("nome").setDescription("Nome da Obra/Série").setRequired(true))
@@ -24,22 +23,32 @@ export default {
     await interaction.deferReply({ ephemeral: true });
 
     try {
-      // 1. Identifica o Grupo Global vinculado a este canal
+      // 1. Validação de Role e Identificação do Admin
+      const admin = await prisma.user.findUnique({
+        where: { discord_id: interaction.user.id }
+      });
+
+      if (!admin || admin.role !== 'admin') {
+        return interaction.editReply("❌ **Acesso Negado:** Apenas administradores cadastrados podem gerenciar o catálogo global.");
+      }
+
+      // 2. Identifica o Grupo Global deste canal
       const grupo = await prisma.grupo.findUnique({ 
         where: { channel_id: channelId } 
       });
 
       if (!grupo) {
-        return interaction.editReply("❌ Este canal não é um Grupo Global registrado. Use `/registrargrupo` primeiro.");
+        return interaction.editReply("❌ Este canal não está registrado como um **Grupo Global**. Use `/registrargrupo` primeiro.");
       }
 
-      // 2. Atualiza ou Cria o produto na tabela global de obras
+      // 3. Upsert na tabela global de PRODUTOS
       const produto = await prisma.produto.upsert({
         where: { nome: nome },
         update: { 
           plataforma: plataforma,
           imagem_url: capa || undefined,
-          nome_alternativo: nomeAlternativo || undefined
+          nome_alternativo: nomeAlternativo || undefined,
+          updated_at: new Date()
         },
         create: { 
           nome: nome, 
@@ -49,22 +58,23 @@ export default {
         }
       });
 
-      // 3. Vincula a Obra ao Grupo (Tabela UserSerie)
-      // Usamos o user_id do DONO do grupo (Admin) para que a configuração seja válida para o canal todo
-      await prisma.userSerie.upsert({
+      // 4. Upsert na tabela de VÍNCULOS (UserSeries)
+      // Ajustado para a nova constraint: user_id + produto_id + grupo_id
+      await prisma.userSeries.upsert({
         where: {
-          unique_user_produto: {
-            user_id: grupo.user_id, // Atribui ao Admin dono do grupo
-            produto_id: produto.id
+          unique_user_produto_grupo: {
+            user_id: admin.id,
+            produto_id: produto.id,
+            grupo_id: grupo.id
           }
         },
         update: { 
           preco: valor, 
-          grupo_id: grupo.id,
-          ativo: true 
+          ativo: true,
+          updated_at: new Date()
         },
         create: {
-          user_id: grupo.user_id,
+          user_id: admin.id,
           produto_id: produto.id,
           grupo_id: grupo.id,
           preco: valor,
@@ -72,19 +82,44 @@ export default {
         }
       });
 
-      // 4. Resposta formatada
-      let response = `✅ **Obra Registrada Manualmente!**\n`;
-      response += `📖 **Nome:** ${nome}\n`;
-      response += `💰 **Preço Unitário:** R$ ${valor.toFixed(2)}\n`;
-      response += `📍 **Grupo:** ${grupo.nome}`;
-      
-      if (nomeAlternativo) response += `\n📝 **Nome Alt:** *${nomeAlternativo}*`;
+      // 5. Log de Auditoria
+      await prisma.activityLog.create({
+        data: {
+          user_id: admin.id,
+          action: "admin_register_product",
+          entity_type: "produto",
+          entity_id: produto.id,
+          details: { 
+            obra: nome, 
+            preco: valor, 
+            grupo: grupo.nome 
+          }
+        }
+      });
 
-      return interaction.editReply(response);
+      // 6. Resposta Visual Nexus Style
+      const embed = new EmbedBuilder()
+        .setTitle("📖 Obra Mapeada com Sucesso")
+        .setColor("#00BFFF")
+        .setThumbnail(capa || null)
+        .addFields(
+          { name: "🏷️ Nome", value: `**${nome}**`, inline: true },
+          { name: "💰 Preço/Cap", value: `R$ ${valor.toFixed(2)}`, inline: true },
+          { name: "📍 Grupo", value: grupo.nome, inline: true },
+          { name: "📱 Origem", value: plataforma, inline: true }
+        )
+        .setFooter({ text: "Yakuza Raws • Gestão de Catálogo" })
+        .setTimestamp();
+
+      if (nomeAlternativo) {
+        embed.addFields({ name: "📝 Nome Alt.", value: `*${nomeAlternativo}*`, inline: false });
+      }
+
+      return interaction.editReply({ embeds: [embed] });
 
     } catch (e) {
       console.error("❌ Erro ao registrar produto manual:", e);
-      return interaction.editReply("❌ Erro técnico ao registrar produto. Verifique se o seu usuário está cadastrado no site.");
+      return interaction.editReply(`❌ **Erro no Banco:** ${e.message}`);
     }
   }
 };

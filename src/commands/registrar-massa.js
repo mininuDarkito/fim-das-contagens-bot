@@ -12,13 +12,12 @@ const renderProgressBar = (atual, total) => {
 
 const truncate = (str, limit = 1024) => str.length > limit ? str.substring(0, limit - 3) + "..." : str;
 
-// Função para evitar bloqueios de API (Rate Limit)
 const delay = (ms) => new Promise(res => setTimeout(res, ms));
 
 export default {
   data: new SlashCommandBuilder()
     .setName("registrar-massa")
-    .setDescription("ADMIN: Registra múltiplos produtos globais via links.")
+    .setDescription("ADMIN: Scraper de múltiplos produtos para este grupo global.")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
     .addStringOption(o => o.setName("plataforma").setDescription("Escolha o scraper").setAutocomplete(true).setRequired(true))
     .addStringOption(o => o.setName("links").setDescription("Links separados por ESPAÇO ou QUEBRA DE LINHA").setRequired(true))
@@ -42,47 +41,44 @@ export default {
     const linksRaw = interaction.options.getString("links");
     const valor = interaction.options.getNumber("valor");
     
-    // Limpeza de links
     const listaLinks = [...new Set(linksRaw.split(/[\s,\n,]+/).filter(link => link.startsWith('http')))];
 
     if (listaLinks.length === 0) return interaction.reply({ content: "❌ Nenhum link válido enviado.", ephemeral: true });
 
     await interaction.deferReply({ ephemeral: true });
 
-    const pathScript = path.join(process.cwd(), `src/scrapers/${plataformaSlug}.js`);
-    if (!fs.existsSync(pathScript)) return interaction.editReply(`❌ Scraper \`${plataformaSlug}\` não encontrado.`);
-
-    const resultados = { sucessos: [], falhas: [] };
-
     try {
+      // 1. Validação de Admin e Grupo
+      const admin = await prisma.user.findUnique({ where: { discord_id: interaction.user.id } });
+      if (!admin || admin.role !== 'admin') {
+        return interaction.editReply("❌ **Acesso Negado:** Apenas administradores cadastrados podem realizar registros em massa.");
+      }
+
+      const grupo = await prisma.grupo.findUnique({ where: { channel_id: interaction.channelId } });
+      if (!grupo) return interaction.editReply("❌ Este canal não está registrado como um **Grupo Global**.");
+
+      const pathScript = path.join(process.cwd(), `src/scrapers/${plataformaSlug}.js`);
+      if (!fs.existsSync(pathScript)) return interaction.editReply(`❌ Scraper \`${plataformaSlug}\` não encontrado.`);
+
       const scraperModule = await import(`file://${pathScript}`);
       const scrapeFunc = scraperModule.scrape || (scraperModule.default?.scrape) || scraperModule.default;
 
-      // 1. Identifica o Grupo Global
-      const grupo = await prisma.grupo.findUnique({ where: { channel_id: interaction.channelId } });
-      if (!grupo) return interaction.editReply("❌ Este canal não é um Grupo Global registrado.");
+      const resultados = { sucessos: [], falhas: [] };
 
       // 2. Loop de Processamento
       for (let i = 0; i < listaLinks.length; i++) {
         let url = listaLinks[i];
         
-        // Atualiza status no Discord
         await interaction.editReply({
           content: `⏳ Processando obra **${i + 1} de ${listaLinks.length}** na plataforma **${plataformaSlug.toUpperCase()}**...\n${renderProgressBar(i + 1, listaLinks.length)}`
         });
 
         try {
-          // Normalização específica (Ex: AC.QQ)
-          if (plataformaSlug === 'acqq' && url.includes('ComicView')) {
-            const matchId = url.match(/\/id\/(\d+)/);
-            if (matchId) url = `https://ac.qq.com/Comic/comicInfo/id/${matchId[1]}`;
-          }
-
-          // Executa Scraper
+          // Scraper
           const metadata = await scrapeFunc(url);
-          if (!metadata?.nome) throw new Error("Scraper retornou dados vazios.");
+          if (!metadata?.nome) throw new Error("Dados não encontrados no link.");
 
-          // Transação para garantir consistência Produto + UserSerie
+          // Transação com a nova constraint
           await prisma.$transaction(async (tx) => {
             const produto = await tx.produto.upsert({
               where: { nome: metadata.nome },
@@ -90,7 +86,8 @@ export default {
                 plataforma: plataformaSlug,
                 descricao: metadata.descricao || "Sem descrição.",
                 imagem_url: metadata.imagem_url,
-                link_serie: metadata.link_serie || url
+                link_serie: metadata.link_serie || url,
+                updated_at: new Date()
               },
               create: {
                 nome: metadata.nome,
@@ -101,16 +98,18 @@ export default {
               }
             });
 
-            await tx.userSerie.upsert({
+            // Atualizado para a constraint: user_id + produto_id + grupo_id
+            await tx.userSeries.upsert({
               where: { 
-                unique_user_produto: { 
-                  user_id: grupo.user_id, // Vincula ao ADMIN dono do grupo
-                  produto_id: produto.id 
+                unique_user_produto_grupo: { 
+                  user_id: admin.id, 
+                  produto_id: produto.id,
+                  grupo_id: grupo.id
                 } 
               },
-              update: { preco: valor, grupo_id: grupo.id, ativo: true },
+              update: { preco: valor, ativo: true, updated_at: new Date() },
               create: { 
-                user_id: grupo.user_id, 
+                user_id: admin.id, 
                 produto_id: produto.id, 
                 grupo_id: grupo.id, 
                 preco: valor, 
@@ -121,31 +120,30 @@ export default {
 
           resultados.sucessos.push(metadata.nome);
         } catch (err) {
-          console.error(`Erro ao processar ${url}:`, err.message);
           resultados.falhas.push(`\`${url.split('/').pop()}\`: ${err.message}`);
         }
 
-        // Pequena pausa para não ser bloqueado pelas plataformas
-        if (listaLinks.length > 1) await delay(800);
+        if (listaLinks.length > 1) await delay(1000); // Delay maior para evitar bloqueio por IP
       }
 
       // 3. Relatório Final
       const embed = new EmbedBuilder()
-        .setTitle("📊 Relatório: Registro em Massa")
-        .setDescription(`Processamento finalizado para o grupo **${grupo.nome}**.`)
-        .setColor(resultados.falhas.length > 0 ? "#FFA500" : "#00FF00")
+        .setTitle("🔗 Registro em Massa Finalizado")
+        .setDescription(`As obras abaixo foram integradas ao grupo **${grupo.nome}**.`)
+        .setColor(resultados.falhas.length > 0 ? "#E74C3C" : "#2ECC71")
         .addFields(
           { name: `✅ Sucessos (${resultados.sucessos.length})`, value: truncate(resultados.sucessos.join("\n") || "Nenhum") },
           { name: `❌ Falhas (${resultados.falhas.length})`, value: truncate(resultados.falhas.join("\n") || "Nenhuma") }
         )
-        .setFooter({ text: `Plataforma: ${plataformaSlug.toUpperCase()}` })
+        .setThumbnail(resultados.sucessos.length > 0 ? "https://cdn-icons-png.flaticon.com/512/148/148767.png" : null)
+        .setFooter({ text: `Yakuza Raws Scraper System • ${plataformaSlug.toUpperCase()}` })
         .setTimestamp();
 
-      await interaction.editReply({ content: "✅ Registro em massa concluído!", embeds: [embed] });
+      await interaction.editReply({ content: "✅ Processamento finalizado!", embeds: [embed] });
 
     } catch (error) {
       console.error("Erro crítico no registrar-massa:", error);
-      await interaction.editReply({ content: `❌ Erro crítico no sistema: ${error.message}` });
+      await interaction.editReply({ content: `❌ Erro crítico: ${error.message}` });
     }
   }
 };

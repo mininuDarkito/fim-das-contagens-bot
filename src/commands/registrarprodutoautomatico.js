@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, PermissionFlagsBits } from "discord.js";
+import { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } from "discord.js";
 import prisma from "../../prisma/client.js";
 import path from "path";
 import fs from "fs";
@@ -6,7 +6,7 @@ import fs from "fs";
 export default {
   data: new SlashCommandBuilder()
     .setName("registrarprodutoautomatico")
-    .setDescription("ADMIN: Regista um produto global no grupo atual via scraper.")
+    .setDescription("YAKUZA: Registra um produto global via scraper no grupo atual.")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
     .addStringOption(o => 
       o.setName("plataforma")
@@ -41,87 +41,105 @@ export default {
 
     await interaction.deferReply({ ephemeral: true });
 
-    // --- 1. NORMALIZAÇÃO DE LINK (Ex: AC.QQ) ---
-    if (plataformaSlug === 'acqq' || url.includes('ac.qq.com')) {
-      if (url.includes('ComicView')) {
-        const matchId = url.match(/\/id\/(\d+)/);
-        if (matchId && matchId[1]) {
-          url = `https://ac.qq.com/Comic/comicInfo/id/${matchId[1]}`;
+    try {
+      // 1. Validação de Role e Grupo
+      const user = await prisma.user.findUnique({ where: { discord_id: interaction.user.id } });
+      if (!user || user.role !== 'admin') {
+        return interaction.editReply("❌ **Acesso Negado:** Apenas administradores da Yakuza Raws podem registrar obras globais.");
+      }
+
+      const grupo = await prisma.grupo.findUnique({ where: { channel_id: interaction.channelId } });
+      if (!grupo) return interaction.editReply("❌ Este canal não é um **Grupo Global** registrado.");
+
+      // 2. Normalização e Verificação de Scraper
+      if (plataformaSlug === 'acqq' || url.includes('ac.qq.com')) {
+        if (url.includes('ComicView')) {
+          const matchId = url.match(/\/id\/(\d+)/);
+          if (matchId && matchId[1]) url = `https://ac.qq.com/Comic/comicInfo/id/${matchId[1]}`;
         }
       }
-    }
 
-    const pathScript = path.join(process.cwd(), `src/scrapers/${plataformaSlug}.js`);
-    if (!fs.existsSync(pathScript)) {
-      return interaction.editReply(`❌ Scraper não encontrado para \`${plataformaSlug}\`.`);
-    }
+      const pathScript = path.join(process.cwd(), `src/scrapers/${plataformaSlug}.js`);
+      if (!fs.existsSync(pathScript)) return interaction.editReply(`❌ Scraper \`${plataformaSlug}\` não encontrado.`);
 
-    try {
-      // 2. BUSCA O GRUPO GLOBAL
-      const grupo = await prisma.grupo.findUnique({ where: { channel_id: interaction.channelId } });
-      if (!grupo) return interaction.editReply("❌ Este canal não está registrado como um Grupo Global.");
-
-      // 3. EXECUÇÃO DO SCRAPER
+      // 3. Execução do Scraper
       const scraperModule = await import(`file://${pathScript}`);
       const scrapeFunc = scraperModule.scrape || (scraperModule.default && scraperModule.default.scrape) || scraperModule.default;
 
-      if (typeof scrapeFunc !== 'function') {
-        throw new Error(`Scraper inválido.`);
-      }
-
       const metadata = await scrapeFunc(url);
-      if (!metadata || !metadata.nome) {
-        return interaction.editReply("❌ O scraper falhou ao extrair dados.");
-      }
+      if (!metadata || !metadata.nome) return interaction.editReply("❌ O scraper falhou ao extrair dados da obra.");
 
-      // 4. UPSERT DO PRODUTO (Tabela Global de Obras)
-      const produto = await prisma.produto.upsert({
-        where: { nome: metadata.nome },
-        update: {
-          plataforma: plataformaSlug.replace(/-/g, ' '),
-          descricao: metadata.descricao || "Sem descrição.",
-          imagem_url: metadata.imagem_url, 
-          link_serie: metadata.link_serie || url
-        },
-        create: {
-          nome: metadata.nome,
-          plataforma: plataformaSlug.replace(/-/g, ' '),
-          descricao: metadata.descricao || "Sem descrição.",
-          imagem_url: metadata.imagem_url,
-          link_serie: metadata.link_serie || url
+      // 4. Upsert do Produto e Vínculo (Transação para Segurança)
+      const resultado = await prisma.$transaction(async (tx) => {
+        const produto = await tx.produto.upsert({
+          where: { nome: metadata.nome },
+          update: {
+            plataforma: plataformaSlug.toUpperCase(),
+            descricao: metadata.descricao || "Sem descrição.",
+            imagem_url: metadata.imagem_url, 
+            link_serie: metadata.link_serie || url,
+            updated_at: new Date()
+          },
+          create: {
+            nome: metadata.nome,
+            plataforma: plataformaSlug.toUpperCase(),
+            descricao: metadata.descricao || "Sem descrição.",
+            imagem_url: metadata.imagem_url,
+            link_serie: metadata.link_serie || url
+          }
+        });
+
+        const vinculo = await tx.userSeries.upsert({
+          where: { 
+            unique_user_produto_grupo: { 
+              user_id: user.id, // O Admin que executou o comando
+              produto_id: produto.id,
+              grupo_id: grupo.id
+            } 
+          },
+          update: { preco: valor, ativo: true, updated_at: new Date() },
+          create: { 
+            user_id: user.id, 
+            produto_id: produto.id, 
+            grupo_id: grupo.id, 
+            preco: valor, 
+            ativo: true 
+          }
+        });
+
+        return { produto, vinculo };
+      });
+
+      // 5. Log de Atividade
+      await prisma.activityLog.create({
+        data: {
+          user_id: user.id,
+          action: "auto_register_product",
+          entity_type: "produto",
+          entity_id: resultado.produto.id,
+          details: { obra: metadata.nome, grupo: grupo.nome, plataforma: plataformaSlug }
         }
       });
 
-      // 5. VÍNCULO DA OBRA AO GRUPO (Tabela UserSerie)
-      // Usamos o user_id do DONO do grupo (você) para definir o preço global deste canal
-      await prisma.userSerie.upsert({
-        where: { 
-          unique_user_produto: { 
-            user_id: grupo.user_id, 
-            produto_id: produto.id 
-          } 
-        },
-        update: { 
-          preco: valor, 
-          grupo_id: grupo.id, 
-          ativo: true 
-        },
-        create: { 
-          user_id: grupo.user_id, 
-          produto_id: produto.id, 
-          grupo_id: grupo.id, 
-          preco: valor, 
-          ativo: true 
-        }
-      });
+      // 6. Resposta Visual Yakuza Raws
+      const embed = new EmbedBuilder()
+        .setTitle("🏮 Obra Integrada à Yakuza Raws")
+        .setColor("#FF0000") // Vermelho Yakuza
+        .setThumbnail(metadata.imagem_url || null)
+        .addFields(
+          { name: "📖 Nome", value: `**${metadata.nome}**`, inline: false },
+          { name: "💰 Valor/Cap", value: `R$ ${valor.toFixed(2)}`, inline: true },
+          { name: "📍 Grupo", value: grupo.nome, inline: true },
+          { name: "📱 Plataforma", value: plataformaSlug.toUpperCase(), inline: true }
+        )
+        .setFooter({ text: "Yakuza Raws • Automação de Catálogo" })
+        .setTimestamp();
 
-      await interaction.editReply({
-        content: `✅ **Obra Registrada no Grupo Global!**\n📖 **Nome:** ${metadata.nome}\n💰 **Preço Unitário:** R$ ${valor.toFixed(2)}\n📍 **Canal:** ${grupo.nome}`
-      });
+      await interaction.editReply({ embeds: [embed] });
 
     } catch (error) {
-      console.error(error);
-      interaction.editReply(`❌ Erro: ${error.message}`);
+      console.error("Erro no registro automático:", error);
+      interaction.editReply(`❌ **Erro Interno:** ${error.message}`);
     }
   }
 };

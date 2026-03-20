@@ -6,7 +6,7 @@ import fs from "fs";
 export default {
   data: new SlashCommandBuilder()
     .setName("registrarprodutoautomatico")
-    .setDescription("YAKUZA: Registra um produto global via scraper no grupo atual.")
+    .setDescription("YAKUZA: Registra uma obra global via scraper no grupo atual.")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
     .addStringOption(o => 
       o.setName("plataforma")
@@ -42,23 +42,16 @@ export default {
     await interaction.deferReply({ ephemeral: true });
 
     try {
-      // 1. Validação de Role e Grupo
-      const user = await prisma.user.findUnique({ where: { discord_id: interaction.user.id } });
-      if (!user || user.role !== 'admin') {
-        return interaction.editReply("❌ **Acesso Negado:** Apenas administradores da Yakuza Raws podem registrar obras globais.");
+      // 1. Identificação de Admin e Grupo
+      const admin = await prisma.user.findUnique({ where: { discord_id: interaction.user.id } });
+      if (!admin || admin.role !== 'admin') {
+        return interaction.editReply("❌ **Acesso Negado:** Apenas administradores da Yakuza Raws podem gerenciar o catálogo global.");
       }
 
       const grupo = await prisma.grupo.findUnique({ where: { channel_id: interaction.channelId } });
-      if (!grupo) return interaction.editReply("❌ Este canal não é um **Grupo Global** registrado.");
+      if (!grupo) return interaction.editReply("❌ Este canal não está registrado como um **Grupo Global** da Yakuza.");
 
-      // 2. Normalização e Verificação de Scraper
-      if (plataformaSlug === 'acqq' || url.includes('ac.qq.com')) {
-        if (url.includes('ComicView')) {
-          const matchId = url.match(/\/id\/(\d+)/);
-          if (matchId && matchId[1]) url = `https://ac.qq.com/Comic/comicInfo/id/${matchId[1]}`;
-        }
-      }
-
+      // 2. Verificação do Scraper
       const pathScript = path.join(process.cwd(), `src/scrapers/${plataformaSlug}.js`);
       if (!fs.existsSync(pathScript)) return interaction.editReply(`❌ Scraper \`${plataformaSlug}\` não encontrado.`);
 
@@ -66,10 +59,12 @@ export default {
       const scraperModule = await import(`file://${pathScript}`);
       const scrapeFunc = scraperModule.scrape || (scraperModule.default && scraperModule.default.scrape) || scraperModule.default;
 
+      if (typeof scrapeFunc !== 'function') throw new Error("Scraper inválido ou função 'scrape' não exportada.");
+
       const metadata = await scrapeFunc(url);
       if (!metadata || !metadata.nome) return interaction.editReply("❌ O scraper falhou ao extrair dados da obra.");
 
-      // 4. Upsert do Produto e Vínculo (Transação para Segurança)
+      // 4. TRANSAÇÃO: Registro do Produto + Vínculo (Blindado)
       const resultado = await prisma.$transaction(async (tx) => {
         const produto = await tx.produto.upsert({
           where: { nome: metadata.nome },
@@ -92,14 +87,14 @@ export default {
         const vinculo = await tx.userSeries.upsert({
           where: { 
             unique_user_produto_grupo: { 
-              user_id: user.id, // O Admin que executou o comando
+              user_id: admin.id, 
               produto_id: produto.id,
               grupo_id: grupo.id
             } 
           },
           update: { preco: valor, ativo: true, updated_at: new Date() },
           create: { 
-            user_id: user.id, 
+            user_id: admin.id, 
             produto_id: produto.id, 
             grupo_id: grupo.id, 
             preco: valor, 
@@ -110,27 +105,30 @@ export default {
         return { produto, vinculo };
       });
 
-      // 5. Log de Atividade
-      await prisma.activityLog.create({
-        data: {
-          user_id: user.id,
-          action: "auto_register_product",
-          entity_type: "produto",
-          entity_id: resultado.produto.id,
-          details: { obra: metadata.nome, grupo: grupo.nome, plataforma: plataformaSlug }
-        }
-      });
+      // 5. Log de Atividade (Fora da transação para evitar 'Internal Error' em cascata)
+      try {
+        await prisma.activityLog.create({
+          data: {
+            user_id: admin.id,
+            action: "auto_register_product",
+            entity_type: "produto",
+            entity_id: resultado.produto.id,
+            details: { obra: metadata.nome, grupo: grupo.nome, plataforma: plataformaSlug }
+          }
+        });
+      } catch (logError) {
+        console.warn("⚠️ Log não pôde ser gravado, mas a obra foi registrada.");
+      }
 
-      // 6. Resposta Visual Yakuza Raws
+      // 6. Resposta Visual Yakuza Style (Roxo)
       const embed = new EmbedBuilder()
-        .setTitle("🏮 Obra Integrada à Yakuza Raws")
-        .setColor("#FF0000") // Vermelho Yakuza
+        .setTitle("🏮 Obra Integrada: Yakuza Raws")
+        .setColor("#800080") // Roxo Yakuza
         .setThumbnail(metadata.imagem_url || null)
         .addFields(
-          { name: "📖 Nome", value: `**${metadata.nome}**`, inline: false },
-          { name: "💰 Valor/Cap", value: `R$ ${valor.toFixed(2)}`, inline: true },
-          { name: "📍 Grupo", value: grupo.nome, inline: true },
-          { name: "📱 Plataforma", value: plataformaSlug.toUpperCase(), inline: true }
+          { name: "📖 Nome da Obra", value: `**${metadata.nome}**`, inline: false },
+          { name: "💰 Preço/Cap", value: `R$ ${valor.toFixed(2)}`, inline: true },
+          { name: "📍 Grupo Global", value: grupo.nome, inline: true }
         )
         .setFooter({ text: "Yakuza Raws • Automação de Catálogo" })
         .setTimestamp();
@@ -138,8 +136,10 @@ export default {
       await interaction.editReply({ embeds: [embed] });
 
     } catch (error) {
-      console.error("Erro no registro automático:", error);
-      interaction.editReply(`❌ **Erro Interno:** ${error.message}`);
+      console.error("❌ Erro no registro automático:", error);
+      // Se cair aqui, o erro é do Prisma ou do Scraper
+      const msgErro = error.message.includes("uuid") ? "Erro de ID (UUID) inválido no banco." : error.message;
+      interaction.editReply(`❌ **Erro Interno:** ${msgErro}`);
     }
   }
 };

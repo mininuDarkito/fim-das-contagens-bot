@@ -17,7 +17,7 @@ const delay = (ms) => new Promise(res => setTimeout(res, ms));
 export default {
   data: new SlashCommandBuilder()
     .setName("registrar-massa")
-    .setDescription("ADMIN: Scraper de múltiplos produtos para este grupo global.")
+    .setDescription("YAKUZA ADMIN: Scraper de múltiplos produtos para este grupo global.")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
     .addStringOption(o => o.setName("plataforma").setDescription("Escolha o scraper").setAutocomplete(true).setRequired(true))
     .addStringOption(o => o.setName("links").setDescription("Links separados por ESPAÇO ou QUEBRA DE LINHA").setRequired(true))
@@ -41,6 +41,7 @@ export default {
     const linksRaw = interaction.options.getString("links");
     const valor = interaction.options.getNumber("valor");
     
+    // Limpeza e normalização de links
     const listaLinks = [...new Set(linksRaw.split(/[\s,\n,]+/).filter(link => link.startsWith('http')))];
 
     if (listaLinks.length === 0) return interaction.reply({ content: "❌ Nenhum link válido enviado.", ephemeral: true });
@@ -51,11 +52,11 @@ export default {
       // 1. Validação de Admin e Grupo
       const admin = await prisma.user.findUnique({ where: { discord_id: interaction.user.id } });
       if (!admin || admin.role !== 'admin') {
-        return interaction.editReply("❌ **Acesso Negado:** Apenas administradores cadastrados podem realizar registros em massa.");
+        return interaction.editReply("❌ **Acesso Negado:** Apenas administradores da Yakuza Raws podem realizar registros em massa.");
       }
 
       const grupo = await prisma.grupo.findUnique({ where: { channel_id: interaction.channelId } });
-      if (!grupo) return interaction.editReply("❌ Este canal não está registrado como um **Grupo Global**.");
+      if (!grupo) return interaction.editReply("❌ Este canal não está registrado como um **Grupo Global** no banco de dados.");
 
       const pathScript = path.join(process.cwd(), `src/scrapers/${plataformaSlug}.js`);
       if (!fs.existsSync(pathScript)) return interaction.editReply(`❌ Scraper \`${plataformaSlug}\` não encontrado.`);
@@ -70,20 +71,19 @@ export default {
         let url = listaLinks[i];
         
         await interaction.editReply({
-          content: `⏳ Processando obra **${i + 1} de ${listaLinks.length}** na plataforma **${plataformaSlug.toUpperCase()}**...\n${renderProgressBar(i + 1, listaLinks.length)}`
+          content: `⏳ **Yakuza Scraper**\nProcessando obra **${i + 1} de ${listaLinks.length}** na plataforma **${plataformaSlug.toUpperCase()}**...\n${renderProgressBar(i + 1, listaLinks.length)}`
         });
 
         try {
-          // Scraper
           const metadata = await scrapeFunc(url);
-          if (!metadata?.nome) throw new Error("Dados não encontrados no link.");
+          if (!metadata?.nome) throw new Error("Scraper não retornou nome da obra.");
 
-          // Transação com a nova constraint
+          // Transação com a nova constraint: user_id + produto_id + grupo_id
           await prisma.$transaction(async (tx) => {
             const produto = await tx.produto.upsert({
               where: { nome: metadata.nome },
               update: {
-                plataforma: plataformaSlug,
+                plataforma: plataformaSlug.toUpperCase(),
                 descricao: metadata.descricao || "Sem descrição.",
                 imagem_url: metadata.imagem_url,
                 link_serie: metadata.link_serie || url,
@@ -91,14 +91,13 @@ export default {
               },
               create: {
                 nome: metadata.nome,
-                plataforma: plataformaSlug,
+                plataforma: plataformaSlug.toUpperCase(),
                 descricao: metadata.descricao || "Sem descrição.",
                 imagem_url: metadata.imagem_url,
                 link_serie: metadata.link_serie || url
               }
             });
 
-            // Atualizado para a constraint: user_id + produto_id + grupo_id
             await tx.userSeries.upsert({
               where: { 
                 unique_user_produto_grupo: { 
@@ -123,27 +122,26 @@ export default {
           resultados.falhas.push(`\`${url.split('/').pop()}\`: ${err.message}`);
         }
 
-        if (listaLinks.length > 1) await delay(1000); // Delay maior para evitar bloqueio por IP
+        if (listaLinks.length > 1) await delay(1200); // Delay levemente aumentado para segurança
       }
 
-      // 3. Relatório Final
+      // 3. Relatório Final (Yakuza Theme)
       const embed = new EmbedBuilder()
-        .setTitle("🔗 Registro em Massa Finalizado")
-        .setDescription(`As obras abaixo foram integradas ao grupo **${grupo.nome}**.`)
-        .setColor(resultados.falhas.length > 0 ? "#E74C3C" : "#2ECC71")
+        .setTitle("🏮 Relatório de Integração em Massa")
+        .setDescription(`Processamento finalizado no canal **${grupo.nome}**.`)
+        .setColor(resultados.falhas.length > 0 ? "#800080" : "#2ecc71") // Roxo se houver falhas, verde se tudo ok
         .addFields(
           { name: `✅ Sucessos (${resultados.sucessos.length})`, value: truncate(resultados.sucessos.join("\n") || "Nenhum") },
           { name: `❌ Falhas (${resultados.falhas.length})`, value: truncate(resultados.falhas.join("\n") || "Nenhuma") }
         )
-        .setThumbnail(resultados.sucessos.length > 0 ? "https://cdn-icons-png.flaticon.com/512/148/148767.png" : null)
-        .setFooter({ text: `Yakuza Raws Scraper System • ${plataformaSlug.toUpperCase()}` })
+        .setFooter({ text: `Yakuza Raws Scraper System • v3.0` })
         .setTimestamp();
 
-      await interaction.editReply({ content: "✅ Processamento finalizado!", embeds: [embed] });
+      await interaction.editReply({ content: "✅ Registro em massa concluído!", embeds: [embed] });
 
     } catch (error) {
       console.error("Erro crítico no registrar-massa:", error);
-      await interaction.editReply({ content: `❌ Erro crítico: ${error.message}` });
+      await interaction.editReply({ content: `❌ **Erro Crítico:** ${error.message}` });
     }
   }
 };

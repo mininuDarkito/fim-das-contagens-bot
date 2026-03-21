@@ -17,6 +17,11 @@ export default {
       o.setName("numero")
         .setDescription("Número ou intervalo (ex: 5 ou 5-10)")
         .setRequired(true)
+    )
+    .addStringOption(o =>
+      o.setName("valor")
+        .setDescription("Preço por capítulo (Obrigatório apenas na 1ª vez que for vender a obra)")
+        .setRequired(false)
     ),
 
   async autocomplete(interaction) {
@@ -26,6 +31,7 @@ export default {
   async execute(interaction) {
     const produtoNome = interaction.options.getString("produto");
     const numeroInput = interaction.options.getString("numero");
+    const valorInput = interaction.options.getString("valor");
     const discordUserId = interaction.user.id;
 
     await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
@@ -58,8 +64,8 @@ export default {
         return interaction.editReply(`❌ **Obra não encontrada:** "${produtoNome}" não existe no acervo global da Yakuza.`);
       }
 
-      // 4. Busca a configuração de preço (se o usuário vinculou no painel)
-      const configuracao = await prisma.userSeries.findFirst({
+      // 4. Busca a configuração de preço (Vínculo)
+      let configuracao = await prisma.userSeries.findFirst({
         where: { 
           grupo_id: grupo.id,
           produto_id: obraGlobal.id,
@@ -72,8 +78,37 @@ export default {
         orderBy: { user_id: 'asc' }
       });
 
-      const precoUnit = configuracao ? Number(configuracao.preco) : 0;
-      const isVinculado = !!configuracao;
+      let precoUnit = 0;
+      let recemVinculado = false;
+
+      // --- LÓGICA INTELIGENTE DE VÍNCULO ---
+      if (!configuracao) {
+        // Se a obra não tá vinculada, VERIFICA se o cara passou o valor
+        if (!valorInput) {
+            return interaction.editReply(`⚠️ **Primeiro Lançamento:** Você ainda não vinculou **${obraGlobal.nome}** neste grupo.\n\nPor favor, repita o comando e preencha o campo opcional \`valor\` (ex: \`0,50\`). O bot fará o vínculo automático para as próximas vezes!`);
+        }
+
+        // Formata o valor (aceita vírgula ou ponto)
+        precoUnit = parseFloat(valorInput.replace(",", "."));
+        if (isNaN(precoUnit) || precoUnit < 0) {
+            return interaction.editReply("❌ **Valor Inválido:** O formato do preço está incorreto. Use números, como `0,50` ou `1.50`.");
+        }
+
+        // Cria o vínculo no banco de dados na hora
+        configuracao = await prisma.userSeries.create({
+            data: {
+                user_id: vendedor.id,
+                produto_id: obraGlobal.id,
+                grupo_id: grupo.id,
+                preco: precoUnit,
+                ativo: true
+            }
+        });
+        recemVinculado = true;
+      } else {
+        // Já tem vínculo, puxa o valor do banco (ignora se ele preencheu valor de bobeira)
+        precoUnit = Number(configuracao.preco);
+      }
 
       // --- Lógica de Processamento de Capítulos ---
       let numeros = [];
@@ -112,7 +147,7 @@ export default {
               preco_unitario: precoUnit,
               preco_total: precoUnit,
               data_venda: new Date(),
-              observacoes: `Via bot: ${interaction.user.username}${!isVinculado ? ' (Série não vinculada)' : ''}`
+              observacoes: `Via bot: ${interaction.user.username}`
             }
           }))
         );
@@ -123,7 +158,7 @@ export default {
             user_id: vendedor.id,
             action: "venda_bot_lote",
             entity_type: "venda",
-            details: { obra: obraGlobal.nome, caps: paraCriar, grupo: grupo.nome, is_vinculado: isVinculado }
+            details: { obra: obraGlobal.nome, caps: paraCriar, grupo: grupo.nome, auto_vinculo: recemVinculado }
           }
         });
       }
@@ -131,7 +166,7 @@ export default {
       // --- Resposta Visual (Embed) ---
       const totalFaturado = paraCriar.length * precoUnit;
       
-      // TRAVA DE SEGURANÇA: Verifica se a URL da imagem é válida para o Discord (HTTP/HTTPS)
+      // Validação de URL para evitar o crash 431 no Discord
       let validThumbnail = null;
       if (obraGlobal.imagem_url && obraGlobal.imagem_url.startsWith("http")) {
         validThumbnail = obraGlobal.imagem_url;
@@ -141,14 +176,20 @@ export default {
         .setAuthor({ name: "Yakuza Raws System", iconURL: interaction.user.displayAvatarURL() })
         .setTitle(paraCriar.length > 0 ? "✅ Venda Registrada" : "⚠️ Registro Duplicado")
         .setColor(paraCriar.length > 0 ? "#2ecc71" : "#f1c40f")
-        .setThumbnail(validThumbnail) // Usa a URL validada
+        .setThumbnail(validThumbnail) 
         .setFooter({ text: `Vendedor: ${vendedor.discord_username}` })
         .setTimestamp();
 
       let descricao = `**Série:** ${obraGlobal.nome}\n**Grupo:** ${grupo.nome}`;
-      if (!isVinculado && paraCriar.length > 0) {
-        descricao += `\n\n⚠️ **Aviso:** Esta obra não foi vinculada no seu painel para este grupo. O preço foi registrado como \`R$ 0,00\`. Você pode ajustar isso no Dashboard depois.`;
+      
+      // Aviso elegante de que o bot fez o trabalho de vínculo sozinho
+      if (recemVinculado) {
+        descricao += `\n\n✨ **Vínculo Automático:** A obra foi adicionada ao seu painel com o preço base de \`R$ ${precoUnit.toFixed(2)}\`. Nas próximas vendas, você não precisará informar o valor!`;
+      } else if (valorInput && paraCriar.length > 0) {
+        // Se ele passou o valor atoa (já tava vinculado)
+        descricao += `\n\nℹ️ *O valor digitado foi ignorado pois esta série já está configurada no seu painel a \`R$ ${precoUnit.toFixed(2)}\`.*`;
       }
+      
       embed.setDescription(descricao);
 
       if (paraCriar.length > 0) {

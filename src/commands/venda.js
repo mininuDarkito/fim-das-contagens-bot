@@ -72,7 +72,6 @@ export default {
         orderBy: { user_id: 'asc' }
       });
 
-      // MUDANÇA: Se não tem configuração, permite vender mas zera o preço.
       const precoUnit = configuracao ? Number(configuracao.preco) : 0;
       const isVinculado = !!configuracao;
 
@@ -107,7 +106,7 @@ export default {
           paraCriar.map(n => prisma.venda.create({
             data: {
               user_id: vendedor.id,
-              produto_id: obraGlobal.id, // Usa o ID direto da obra global
+              produto_id: obraGlobal.id,
               grupo_id: grupo.id,
               quantidade: n,
               preco_unitario: precoUnit,
@@ -131,15 +130,21 @@ export default {
 
       // --- Resposta Visual (Embed) ---
       const totalFaturado = paraCriar.length * precoUnit;
+      
+      // TRAVA DE SEGURANÇA: Verifica se a URL da imagem é válida para o Discord (HTTP/HTTPS)
+      let validThumbnail = null;
+      if (obraGlobal.imagem_url && obraGlobal.imagem_url.startsWith("http")) {
+        validThumbnail = obraGlobal.imagem_url;
+      }
+
       const embed = new EmbedBuilder()
         .setAuthor({ name: "Yakuza Raws System", iconURL: interaction.user.displayAvatarURL() })
         .setTitle(paraCriar.length > 0 ? "✅ Venda Registrada" : "⚠️ Registro Duplicado")
         .setColor(paraCriar.length > 0 ? "#2ecc71" : "#f1c40f")
-        .setThumbnail(obraGlobal.imagem_url || null)
+        .setThumbnail(validThumbnail) // Usa a URL validada
         .setFooter({ text: `Vendedor: ${vendedor.discord_username}` })
         .setTimestamp();
 
-      // Aviso inteligente caso a pessoa venda algo que não configurou no site
       let descricao = `**Série:** ${obraGlobal.nome}\n**Grupo:** ${grupo.nome}`;
       if (!isVinculado && paraCriar.length > 0) {
         descricao += `\n\n⚠️ **Aviso:** Esta obra não foi vinculada no seu painel para este grupo. O preço foi registrado como \`R$ 0,00\`. Você pode ajustar isso no Dashboard depois.`;

@@ -2,41 +2,36 @@ export async function autocompleteProdutos(prisma, interaction) {
   if (interaction.responded) return;
 
   try {
-    const focused = interaction.options.getFocused().toLowerCase();
+    const focused = interaction.options.getFocused() || "";
 
-    // Busca rápida no banco
-    const grupo = await prisma.grupo.findUnique({
-      where: { channel_id: interaction.channelId },
-      include: { 
-        user_series: { include: { produto: true } } 
-      }
+    // MUDANÇA: Busca direto no Catálogo Global de Produtos, ignorando se está vinculado ou não
+    const produtos = await prisma.produto.findMany({
+      where: focused ? {
+        OR: [
+          { nome: { contains: focused, mode: 'insensitive' } },
+          { plataforma: { contains: focused, mode: 'insensitive' } },
+          { nome_alternativo: { contains: focused, mode: 'insensitive' } }
+        ]
+      } : undefined,
+      take: 25,
+      orderBy: { nome: 'asc' }
     });
 
-    if (!grupo || !grupo.user_series || grupo.user_series.length === 0) {
-      return await interaction.respond([]);
-    }
-
-    const filtrados = grupo.user_series
-      .filter(serie => {
-        const p = serie.produto;
-        return (
-          p.nome.toLowerCase().includes(focused) || 
-          p.plataforma?.toLowerCase().includes(focused) ||
-          p.nome_alternativo?.toLowerCase().includes(focused)
-        );
-      })
-      .slice(0, 25)
-      .map(serie => ({
-        name: `${serie.produto.plataforma} • ${serie.produto.nome} — R$ ${Number(serie.preco).toFixed(2)}`,
-        value: serie.produto.nome
-      }));
+    const filtrados = produtos.map(p => {
+      const plat = p.plataforma ? `[${p.plataforma}]` : '[GLOBAL]';
+      return {
+        // Discord tem limite de 100 caracteres no nome do autocomplete
+        name: `${plat} ${p.nome}`.substring(0, 100),
+        value: p.nome.substring(0, 100)
+      };
+    });
 
     if (!interaction.responded) {
       await interaction.respond(filtrados);
     }
 
   } catch (error) {
-    // Silencia o erro 10062 (Unknown Interaction) que ocorre se o user fechar o menu rápido
+    // Silencia o erro 10062 (Unknown Interaction)
     if (error.code === 10062 || error.code === 40060) return;
     
     console.error("Erro no autocomplete:", error);

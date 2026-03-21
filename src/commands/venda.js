@@ -1,6 +1,6 @@
 import { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits, MessageFlags } from "discord.js";
 import prisma from "../../prisma/client.js";
-import { autocompleteProdutos } from "../ultils/autocomplete.js";
+import { autocompleteProdutos } from "../ultils/autocomplete.js"; // Ajuste o caminho se necessário
 
 export default {
   data: new SlashCommandBuilder()
@@ -9,7 +9,7 @@ export default {
     .setDefaultMemberPermissions(PermissionFlagsBits.SendMessages)
     .addStringOption(o =>
       o.setName("produto")
-        .setDescription("Obra vendida.")
+        .setDescription("Obra vendida (Acervo Global).")
         .setAutocomplete(true)
         .setRequired(true)
     )
@@ -31,7 +31,7 @@ export default {
     await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
     try {
-      // 1. Identifica o Vendedor no banco de dados
+      // 1. Identifica o Vendedor
       const vendedor = await prisma.user.findUnique({
         where: { discord_id: discordUserId }
       });
@@ -40,35 +40,41 @@ export default {
         return interaction.editReply("❌ **Usuário não encontrado:** Acesse o dashboard do site e vincule sua conta Discord primeiro.");
       }
 
-      // 2. Identifica o Grupo Global deste canal
+      // 2. Identifica o Grupo Global
       const grupo = await prisma.grupo.findUnique({
         where: { channel_id: interaction.channelId }
       });
 
       if (!grupo) {
-        return interaction.editReply("❌ **Canal não mapeado:** Este canal não está registrado como um Grupo Global de vendas.");
+        return interaction.editReply("❌ **Canal não mapeado:** Este canal não está registrado como um Grupo de vendas.");
       }
 
-      // 3. Busca a configuração da obra (Vínculo)
-      // Prioridade 1: Preço definido pelo próprio vendedor para este grupo
-      // Prioridade 2: Preço definido pelo Admin (Dono do Grupo) para este grupo
+      // 3. BUSCA A OBRA NO ACERVO GLOBAL
+      const obraGlobal = await prisma.produto.findUnique({
+        where: { nome: produtoNome }
+      });
+
+      if (!obraGlobal) {
+        return interaction.editReply(`❌ **Obra não encontrada:** "${produtoNome}" não existe no acervo global da Yakuza.`);
+      }
+
+      // 4. Busca a configuração de preço (se o usuário vinculou no painel)
       const configuracao = await prisma.userSeries.findFirst({
         where: { 
           grupo_id: grupo.id,
-          produto: { nome: produtoNome },
+          produto_id: obraGlobal.id,
           OR: [
             { user_id: vendedor.id },
             { user_id: grupo.user_id }
           ],
           ativo: true
         },
-        include: { produto: true },
-        orderBy: { user_id: 'asc' } // Isso ajuda a priorizar o vendedor logado se houver conflito
+        orderBy: { user_id: 'asc' }
       });
 
-      if (!configuracao) {
-        return interaction.editReply(`❌ **Obra não configurada:** A obra **${produtoNome}** não possui preço definido para este grupo.`);
-      }
+      // MUDANÇA: Se não tem configuração, permite vender mas zera o preço.
+      const precoUnit = configuracao ? Number(configuracao.preco) : 0;
+      const isVinculado = !!configuracao;
 
       // --- Lógica de Processamento de Capítulos ---
       let numeros = [];
@@ -82,33 +88,32 @@ export default {
         numeros.push(n);
       }
 
-      // 4. Verificação de Duplicidade (Neste grupo específico)
+      // 5. Verificação de Duplicidade (Neste grupo)
       const existentes = await prisma.venda.findMany({
         where: { 
           grupo_id: grupo.id, 
-          produto_id: configuracao.produto_id, 
+          produto_id: obraGlobal.id, 
           quantidade: { in: numeros } 
         },
-        select: { quantidade: true, user: { select: { discord_username: true } } }
+        select: { quantidade: true }
       });
 
       const jaVendidos = existentes.map(v => v.quantidade);
       const paraCriar = numeros.filter(n => !jaVendidos.includes(n));
-      const precoUnit = Number(configuracao.preco);
 
-      // 5. Registro das Vendas em Transação
+      // 6. Registro das Vendas em Transação
       if (paraCriar.length > 0) {
         await prisma.$transaction(
           paraCriar.map(n => prisma.venda.create({
             data: {
               user_id: vendedor.id,
-              produto_id: configuracao.produto_id,
+              produto_id: obraGlobal.id, // Usa o ID direto da obra global
               grupo_id: grupo.id,
               quantidade: n,
               preco_unitario: precoUnit,
               preco_total: precoUnit,
               data_venda: new Date(),
-              observacoes: `Via bot: ${interaction.user.username}`
+              observacoes: `Via bot: ${interaction.user.username}${!isVinculado ? ' (Série não vinculada)' : ''}`
             }
           }))
         );
@@ -119,25 +124,34 @@ export default {
             user_id: vendedor.id,
             action: "venda_bot_lote",
             entity_type: "venda",
-            details: { obra: configuracao.produto.nome, caps: paraCriar, grupo: grupo.nome }
+            details: { obra: obraGlobal.nome, caps: paraCriar, grupo: grupo.nome, is_vinculado: isVinculado }
           }
         });
       }
 
-      // --- Resposta Visual ---
+      // --- Resposta Visual (Embed) ---
       const totalFaturado = paraCriar.length * precoUnit;
       const embed = new EmbedBuilder()
         .setAuthor({ name: "Yakuza Raws System", iconURL: interaction.user.displayAvatarURL() })
         .setTitle(paraCriar.length > 0 ? "✅ Venda Registrada" : "⚠️ Registro Duplicado")
-        .setDescription(`**Série:** ${configuracao.produto.nome}\n**Grupo:** ${grupo.nome}`)
         .setColor(paraCriar.length > 0 ? "#2ecc71" : "#f1c40f")
-        .addFields(
-          { name: "💰 Faturamento", value: `R$ ${totalFaturado.toFixed(2)}`, inline: true },
-          { name: "📖 Capítulos", value: paraCriar.length > 0 ? `\`${paraCriar.join(", ")}\`` : "Nenhum novo registro", inline: true }
-        )
-        .setThumbnail(configuracao.produto.imagem_url || null)
+        .setThumbnail(obraGlobal.imagem_url || null)
         .setFooter({ text: `Vendedor: ${vendedor.discord_username}` })
         .setTimestamp();
+
+      // Aviso inteligente caso a pessoa venda algo que não configurou no site
+      let descricao = `**Série:** ${obraGlobal.nome}\n**Grupo:** ${grupo.nome}`;
+      if (!isVinculado && paraCriar.length > 0) {
+        descricao += `\n\n⚠️ **Aviso:** Esta obra não foi vinculada no seu painel para este grupo. O preço foi registrado como \`R$ 0,00\`. Você pode ajustar isso no Dashboard depois.`;
+      }
+      embed.setDescription(descricao);
+
+      if (paraCriar.length > 0) {
+        embed.addFields(
+          { name: "💰 Faturamento", value: `R$ ${totalFaturado.toFixed(2)}`, inline: true },
+          { name: "📖 Capítulos", value: `\`${paraCriar.join(", ")}\``, inline: true }
+        );
+      }
 
       if (jaVendidos.length > 0) {
         embed.addFields({ name: "🚫 Já registrados neste grupo", value: `\`${jaVendidos.join(", ")}\`` });

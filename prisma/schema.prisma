@@ -8,89 +8,84 @@ datasource db {
 }
 
 model User {
-  id               String        @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  discord_id       String        @unique
+  id               String    @id @default(uuid()) @db.Uuid
+  discord_id       String    @unique
   discord_username String
   discord_avatar   String?
   email            String?
-  role             String?       @default("user")
-  billing_setup    Json?         @default("{\"chave_pix\": \"\", \"instrucoes\": \"\", \"tipo_chave\": \"pix\", \"metodo_preferido\": \"pix\", \"nome_beneficiario\": \"\"}")
-  created_at       DateTime?     @default(now()) @db.Timestamptz(6)
-  updated_at       DateTime?     @default(now()) @db.Timestamptz(6)
+  role             String?   @default("user")
+  billing_setup    Json?     @default("{\"chave_pix\": \"\", \"instrucoes\": \"\", \"tipo_chave\": \"pix\", \"metodo_preferido\": \"pix\", \"nome_beneficiario\": \"\"}")
+  created_at       DateTime? @default(now()) @db.Timestamptz
+  updated_at       DateTime? @default(now()) @db.Timestamptz
   discord_banner   String?
-  activity_logs    ActivityLog[]
-  grupos           Grupo[]
-  user_series      UserSeries[]
-  vendas           Venda[]
+
+  // Relações
+  grupos                Grupo[]
+  activity_logs         ActivityLog[]
+  vendas                Venda[]
+  user_series           UserSerie[]
+  vendor_statuses       VendorStatus[]
+  vendor_monthly_status VendorMonthlyStatus[]
 
   @@map("users")
 }
 
-model Grupo {
-  id          String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  user_id     String       @db.Uuid
-  nome        String
-  descricao   String?
-  created_at  DateTime?    @default(now()) @db.Timestamptz(6)
-  updated_at  DateTime?    @default(now()) @db.Timestamptz(6)
-  channel_id  String?      @unique
-  user        User         @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  user_series UserSeries[]
-  vendas      Venda[]
-
-  @@map("grupos")
-}
-
 model Produto {
-  id               String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  nome             String       @unique
+  id               String    @id @default(uuid()) @db.Uuid
+  nome             String    @unique
   descricao        String?
   imagem_url       String?
   link_serie       String?
-  plataforma       String?      @db.VarChar(255)
-  created_at       DateTime?    @default(now()) @db.Timestamptz(6)
-  updated_at       DateTime?    @default(now()) @db.Timestamptz(6)
+  plataforma       String?   @db.VarChar(255)
+  created_at       DateTime? @default(now()) @db.Timestamptz
+  updated_at       DateTime? @default(now()) @db.Timestamptz
   nome_alternativo String?
-  user_series      UserSeries[]
-  vendas           Venda[]
+
+  // Relações
+  vendas      Venda[]
+  user_series UserSerie[]
 
   @@map("produtos")
 }
 
-model UserSeries {
-  id         String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  user_id    String    @db.Uuid
-  produto_id String    @db.Uuid
-  grupo_id   String    @db.Uuid
-  preco      Decimal   @default(0.00) @db.Decimal(10, 2)
-  ativo      Boolean?  @default(true)
-  created_at DateTime? @default(now()) @db.Timestamptz(6)
-  updated_at DateTime? @default(now()) @db.Timestamptz(6)
-  
-  grupo      Grupo     @relation(fields: [grupo_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  produto    Produto   @relation(fields: [produto_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  user       User      @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+model Grupo {
+  id             String    @id @default(uuid()) @db.Uuid
+  user_id        String    @db.Uuid
+  nome           String
+  descricao      String?
+  created_at     DateTime? @default(now()) @db.Timestamptz
+  updated_at     DateTime? @default(now()) @db.Timestamptz
+  channel_id     String?   @unique
+  payment_status Boolean?  @default(false)
 
-  // Atualizado conforme constraint 'unique_user_produto_grupo' do dump
-  @@unique([user_id, produto_id, grupo_id], name: "unique_user_produto_grupo")
-  @@map("user_series")
+  // Relações
+  user                   User                  @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  vendas                 Venda[]
+  user_series            UserSerie[]
+  grupo_monthly_payments GrupoMonthlyPayment[]
+  vendor_statuses        VendorStatus[]
+  vendor_monthly_status  VendorMonthlyStatus[]
+
+  @@map("grupos")
 }
 
 model ActivityLog {
-  id          String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  id          String    @id @default(uuid()) @db.Uuid
   user_id     String    @db.Uuid
   action      String
   entity_type String
   entity_id   String?   @db.Uuid
   details     Json?     @default("{}")
-  created_at  DateTime? @default(now()) @db.Timestamptz(6)
-  user        User      @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  created_at  DateTime? @default(now()) @db.Timestamptz
+
+  // Relações
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
   @@map("activity_logs")
 }
 
 model Venda {
-  id                 String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  id                 String    @id @default(uuid()) @db.Uuid
   user_id            String    @db.Uuid
   produto_id         String    @db.Uuid
   grupo_id           String?   @db.Uuid
@@ -98,18 +93,93 @@ model Venda {
   preco_unitario     Decimal   @db.Decimal(10, 2)
   preco_total        Decimal   @db.Decimal(10, 2)
   observacoes        String?
-  data_venda         DateTime? @default(now()) @db.Timestamptz(6)
-  created_at         DateTime? @default(now()) @db.Timestamptz(6)
-  updated_at         DateTime? @default(now()) @db.Timestamptz(6)
+  data_venda         DateTime? @default(now()) @db.Timestamptz
+  created_at         DateTime? @default(now()) @db.Timestamptz
+  updated_at         DateTime? @default(now()) @db.Timestamptz
   capitulos_detalhes String?
   lock_user          Boolean?  @default(false)
   lock_admin         Boolean?  @default(false)
-  
-  grupo              Grupo?    @relation(fields: [grupo_id], references: [id], onUpdate: NoAction, onDelete: SetNull)
-  produto            Produto   @relation(fields: [produto_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  user               User      @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  // Atualizado conforme constraint 'vendas_user_id_produto_id_grupo_id_quantidade_key' do dump
-  @@unique([user_id, produto_id, grupo_id, quantidade], name: "vendas_user_id_produto_id_grupo_id_quantidade_key")
+  // Relações
+  user    User    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  produto Produto @relation(fields: [produto_id], references: [id], onDelete: Cascade)
+  grupo   Grupo?  @relation(fields: [grupo_id], references: [id], onDelete: SetNull)
+
+  @@unique([user_id, produto_id, grupo_id, quantidade])
   @@map("vendas")
+}
+
+model UserSerie {
+  id         String    @id @default(uuid()) @db.Uuid
+  user_id    String    @db.Uuid
+  produto_id String    @db.Uuid
+  grupo_id   String    @db.Uuid
+  preco      Decimal   @default(0.00) @db.Decimal(10, 2)
+  ativo      Boolean?  @default(true)
+  created_at DateTime? @default(now()) @db.Timestamptz
+  updated_at DateTime? @default(now()) @db.Timestamptz
+
+  // Relações
+  user    User    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  produto Produto @relation(fields: [produto_id], references: [id], onDelete: Cascade)
+  grupo   Grupo   @relation(fields: [grupo_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, produto_id, grupo_id])
+  @@map("user_series")
+}
+
+model GrupoMonthlyPayment {
+  id             String    @id @default(uuid()) @db.Uuid
+  grupo_id       String    @db.Uuid
+  month_year     String    @db.VarChar(7)
+  payment_status Boolean?  @default(false)
+  created_at     DateTime? @default(now()) @db.Timestamptz
+  updated_at     DateTime? @default(now()) @db.Timestamptz
+
+  // Relações
+  grupo Grupo @relation(fields: [grupo_id], references: [id], onDelete: Cascade)
+
+  @@unique([grupo_id, month_year])
+  @@index([grupo_id], map: "idx_grupo_monthly_payment_grupo_id")
+  @@index([month_year], map: "idx_grupo_monthly_payment_month")
+  @@index([payment_status], map: "idx_grupo_monthly_payment_status")
+  @@map("grupo_monthly_payment")
+}
+
+model VendorStatus {
+  id                 String    @id @default(uuid()) @db.Uuid
+  user_id            String    @db.Uuid
+  grupo_id           String    @db.Uuid
+  recebimento_status Boolean?  @default(false)
+  created_at         DateTime? @default(now()) @db.Timestamptz
+  updated_at         DateTime? @default(now()) @db.Timestamptz
+
+  // Relações
+  user  User  @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  grupo Grupo @relation(fields: [grupo_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, grupo_id])
+  @@index([user_id], map: "idx_vendor_status_user_id")
+  @@index([grupo_id], map: "idx_vendor_status_grupo_id")
+  @@map("vendor_status")
+}
+
+model VendorMonthlyStatus {
+  id                 String    @id @default(uuid()) @db.Uuid
+  user_id            String    @db.Uuid
+  grupo_id           String    @db.Uuid
+  month_year         String    @db.VarChar(7)
+  recebimento_status Boolean?  @default(false)
+  created_at         DateTime? @default(now()) @db.Timestamptz
+  updated_at         DateTime? @default(now()) @db.Timestamptz
+
+  // Relações
+  user  User  @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  grupo Grupo @relation(fields: [grupo_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, grupo_id, month_year])
+  @@index([user_id], map: "idx_vendor_monthly_status_user_id")
+  @@index([grupo_id], map: "idx_vendor_monthly_status_grupo_id")
+  @@index([month_year], map: "idx_vendor_monthly_status_month")
+  @@map("vendor_monthly_status")
 }

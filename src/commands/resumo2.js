@@ -1,10 +1,11 @@
 import { SlashCommandBuilder, EmbedBuilder, AttachmentBuilder, PermissionFlagsBits } from "discord.js";
 import prisma from "../../prisma/client.js";
+import ExcelJS from "exceljs";
 
 export default {
   data: new SlashCommandBuilder()
     .setName("resumo2")
-    .setDescription("YAKUZA ADMIN: Gera um relatório CSV das vendas deste grupo.")
+    .setDescription("YAKUZA ADMIN: Gera um relatório Excel das vendas deste grupo.")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addStringOption(option =>
       option.setName("mes")
@@ -79,34 +80,106 @@ export default {
         return interaction.editReply(`❌ Nenhuma venda encontrada para **${nomeMes.toUpperCase()}** neste canal.`);
       }
 
-      // 4. Gerar CSV (Otimizado para Excel/Google Sheets)
-      let csvContent = "\ufeffVendedor;Produto;Capitulo;Data;Valor\n";
+      // 4. Agrupar vendas por Produto
+      const vendasPorProduto = {};
       let totalGeral = 0;
 
       vendas.forEach(venda => {
-        const vendedor = venda.user?.discord_username || "Desconhecido";
-        const produto = venda.produto?.nome || "Excluído";
-        const capitulo = venda.quantidade;
-        const data = venda.data_venda ? venda.data_venda.toLocaleDateString('pt-BR') : "N/A";
+        const produtoId = venda.produto.id;
+        const capituloNum = venda.quantidade;
         const valor = Number(venda.preco_total || 0);
 
+        if (!vendasPorProduto[produtoId]) {
+          vendasPorProduto[produtoId] = {
+            nomeSerie: venda.produto.nome,
+            plataforma: venda.produto.plataforma || "N/A",
+            capitulos: [],
+            valorTotal: 0
+          };
+        }
+
+        vendasPorProduto[produtoId].capitulos.push(capituloNum);
+        vendasPorProduto[produtoId].valorTotal += valor;
         totalGeral += valor;
-        csvContent += `${vendedor};${produto.replace(/;/g, '-')};${capitulo};${data};${valor.toFixed(2).replace('.', ',')}\n`;
       });
 
-      // 5. Preparação do Arquivo
-      const buffer = Buffer.from(csvContent, "utf-8");
-      const fileName = `YAKUZA_REPORTE_${nomeMes.toUpperCase()}_${grupo.nome.replace(/\s+/g, '_')}.csv`;
+      // 5. Criar workbook Excel
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet("Relatório de Vendas");
+
+      // 6. Configurar cabeçalhos
+      worksheet.columns = [
+        { header: "Nome da Série", key: "nomeSerie", width: 30 },
+        { header: "Capítulos Vendidos", key: "capitulos", width: 40 },
+        { header: "Quantidade", key: "quantidade", width: 12 },
+        { header: "Plataforma", key: "plataforma", width: 15 },
+        { header: "Valor Unitário ($)", key: "valorUnit", width: 18 },
+        { header: "Valor Total ($)", key: "valor", width: 15 }
+      ];
+
+      // 7. Estilizar cabeçalho
+      worksheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+      worksheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF800080" } };
+      worksheet.getRow(1).alignment = { horizontal: "center", vertical: "center" };
+
+      // 8. Preencher dados
+      let linhaAtual = 2;
+      Object.values(vendasPorProduto).forEach(produto => {
+        const capitalulosOrdenados = [...new Set(produto.capitulos)].sort((a, b) => a - b);
+        const capitulosFormatados = capitalulosOrdenados.map(c => `#${c}`).join(", ");
+        const quantidadeTotal = capitalulosOrdenados.length;
+
+        worksheet.addRow({
+          nomeSerie: produto.nomeSerie,
+          capitulos: capitulosFormatados,
+          quantidade: quantidadeTotal,
+          plataforma: produto.plataforma,
+          valorUnit: (produto.valorTotal / quantidadeTotal).toFixed(2),
+
+          valor: produto.valorTotal.toFixed(2)
+        });
+
+        linhaAtual++;
+      });
+
+      // 9. Adicionar linha de total
+      linhaAtual++;
+      worksheet.addRow({
+        nomeSerie: "TOTAL",
+        capitulos: "",
+        quantidade: "",
+        plataforma: "",
+        valorUnit: "",
+        valor: totalGeral.toFixed(2)
+      });
+
+      const linhaTotal = worksheet.getRow(linhaAtual);
+      linhaTotal.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      linhaTotal.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF800080" } };
+      linhaTotal.alignment = { horizontal: "right", vertical: "center" };
+
+      // 10. Centralizar números
+      worksheet.eachRow((row, rowNumber) => {
+        if (rowNumber > 1) {
+          worksheet.getCell(`C${rowNumber}`).alignment = { horizontal: "center" };
+          worksheet.getCell(`D${rowNumber}`).alignment = { horizontal: "center" };
+          worksheet.getCell(`E${rowNumber}`).alignment = { horizontal: "right" };
+        }
+      });
+
+      // 11. Gerar Buffer para arquivo
+      const buffer = await workbook.xlsx.writeBuffer();
+      const fileName = `YAKUZA_REPORTE_${nomeMes.toUpperCase()}_${grupo.nome.replace(/\s+/g, '_')}.xlsx`;
       const attachment = new AttachmentBuilder(buffer, { name: fileName });
 
-      // 6. Resposta com Estética Roxa
+      // 12. Resposta com Estética Roxa
       const embed = new EmbedBuilder()
         .setTitle(`🏮 Relatório Consolidado: ${grupo.nome}`)
-        .setDescription(`Arquivo de contabilidade gerado para o período: **${nomeMes.toUpperCase()}**`)
+        .setDescription(`Arquivo de contabilidade em Excel gerado para o período: **${nomeMes.toUpperCase()}**`)
         .setColor("#800080") // Roxo Yakuza
         .addFields(
           { name: "💰 Total Bruto", value: `**R$ ${totalGeral.toFixed(2)}**`, inline: true },
-          { name: "📦 Lançamentos", value: `\`${vendas.length}\` capítulos`, inline: true }
+          { name: "📊 Produtos", value: `\`${Object.keys(vendasPorProduto).length}\` produtos`, inline: true }
         )
         .setFooter({ text: "Yakuza Raws • Relatório de Auditoria Financeira" })
         .setTimestamp();
@@ -114,7 +187,7 @@ export default {
       await interaction.editReply({ embeds: [embed], files: [attachment] });
 
     } catch (error) {
-      console.error("❌ Erro ao gerar resumo CSV:", error);
+      console.error("❌ Erro ao gerar resumo Excel:", error);
       interaction.editReply("❌ **Erro Interno:** Não foi possível processar o arquivo de contabilidade.");
     }
   }

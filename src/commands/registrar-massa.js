@@ -98,20 +98,36 @@ export default {
               }
             });
 
-            await tx.userSeries.upsert({
+            // 1. Garante o vínculo da obra com o grupo (Preço Global)
+            await tx.grupo_series.upsert({
+              where: {
+                grupo_id_produto_id: {
+                  grupo_id: grupo.id,
+                  produto_id: produto.id
+                }
+              },
+              update: { preco: valor, updated_at: new Date() },
+              create: {
+                grupo_id: grupo.id,
+                produto_id: produto.id,
+                preco: valor
+              }
+            });
+
+            // 2. Garante o vínculo do Admin com a obra (Dashboard)
+            await tx.userSerie.upsert({
               where: { 
-                unique_user_produto_grupo: { 
+                user_id_produto_id_grupo_id: { 
                   user_id: admin.id, 
                   produto_id: produto.id,
                   grupo_id: grupo.id
                 } 
               },
-              update: { preco: valor, ativo: true, updated_at: new Date() },
+              update: { ativo: true, updated_at: new Date() },
               create: { 
                 user_id: admin.id, 
                 produto_id: produto.id, 
                 grupo_id: grupo.id, 
-                preco: valor, 
                 ativo: true 
               }
             });

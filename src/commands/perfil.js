@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder, AttachmentBuilder } from "discord.js";
+import { SlashCommandBuilder, EmbedBuilder, AttachmentBuilder, MessageFlags } from "discord.js";
 import prisma from "../../prisma/client.js";
 import { format } from "date-fns";
 import ptBR from 'date-fns/locale/pt-BR/index.js';
@@ -24,7 +24,7 @@ export default {
     .setDescription("YAKUZA: Exibe sua ficha de membro e estatísticas de faturamento."),
 
   async execute(interaction) {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
     const discordUserId = interaction.user.id;
     const agora = new Date();

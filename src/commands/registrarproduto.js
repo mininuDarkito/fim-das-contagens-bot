@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } from "discord.js";
+import { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, MessageFlags } from "discord.js";
 import prisma from "../../prisma/client.js";
 
 export default {
@@ -20,7 +20,7 @@ export default {
     const nomeAlternativo = interaction.options.getString("alternativo");
     const channelId = interaction.channelId;
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
     try {
       // 1. Validação de Role e Identificação do Admin
@@ -58,18 +58,32 @@ export default {
         }
       });
 
-      // 4. Upsert na tabela de VÍNCULOS (UserSeries)
-      // Ajustado para a nova constraint: user_id + produto_id + grupo_id
-      await prisma.userSeries.upsert({
+      // 4. Upsert na tabela de PREÇO DO GRUPO (grupo_series)
+      await prisma.grupo_series.upsert({
         where: {
-          unique_user_produto_grupo: {
+          grupo_id_produto_id: {
+            grupo_id: grupo.id,
+            produto_id: produto.id
+          }
+        },
+        update: { preco: valor, updated_at: new Date() },
+        create: {
+          grupo_id: grupo.id,
+          produto_id: produto.id,
+          preco: valor
+        }
+      });
+
+      // 5. Upsert na tabela de VÍNCULOS (userSerie)
+      await prisma.userSerie.upsert({
+        where: {
+          user_id_produto_id_grupo_id: {
             user_id: admin.id,
             produto_id: produto.id,
             grupo_id: grupo.id
           }
         },
         update: { 
-          preco: valor, 
           ativo: true,
           updated_at: new Date()
         },
@@ -77,7 +91,6 @@ export default {
           user_id: admin.id,
           produto_id: produto.id,
           grupo_id: grupo.id,
-          preco: valor,
           ativo: true
         }
       });

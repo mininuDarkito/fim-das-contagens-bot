@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } from "discord.js";
+import { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, MessageFlags } from "discord.js";
 import prisma from "../../prisma/client.js";
 
 export default {
@@ -16,7 +16,7 @@ export default {
     const nome = interaction.options.getString("nome");
     const channelId = interaction.channelId;
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
     try {
       // 1. Validação do Admin no Banco (Verifica existência e role)

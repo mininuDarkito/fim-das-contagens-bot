@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder } from "discord.js";
+import { SlashCommandBuilder, EmbedBuilder, MessageFlags } from "discord.js";
 import prisma from "../../prisma/client.js";
 
 export default {
@@ -7,19 +7,16 @@ export default {
     .setDescription("Lista as obras ativas neste Grupo Global e seus preços."),
 
   async execute(interaction) {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
     try {
-      // 1. Busca o Grupo pelo Canal e traz as séries vinculadas ao Admin desse grupo
+      // 1. Busca o Grupo e traz os preços globais (grupo_series) e vínculos
       const grupo = await prisma.grupo.findUnique({
         where: { channel_id: interaction.channelId },
         include: {
-          // Nota: Certifique-se se no seu schema é 'user_series' ou 'userSeries'
-          // Baseado na sua última correção, manteremos 'user_series'
-          user_series: {
-            where: { ativo: true },
+          grupo_series: {
             include: {
-              produto: true
+              produtos: true
             }
           }
         }
@@ -29,7 +26,7 @@ export default {
         return interaction.editReply("❌ Este canal não está registrado como um Grupo Global.");
       }
 
-      const seriesAtivas = grupo.user_series || [];
+      const seriesAtivas = grupo.grupo_series || [];
 
       if (seriesAtivas.length === 0) {
         return interaction.editReply("📭 Nenhuma obra foi ativada para este grupo global ainda.");
@@ -37,11 +34,11 @@ export default {
 
       // 2. Formatação da Lista (Ordenada por Nome)
       const listaFormatada = seriesAtivas
-        .filter(us => us.produto) // Segurança contra produtos deletados
-        .sort((a, b) => a.produto.nome.localeCompare(b.produto.nome))
-        .map(us => {
-          const p = us.produto;
-          const preco = Number(us.preco).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+        .filter(gs => gs.produtos) // Segurança contra produtos deletados
+        .sort((a, b) => a.produtos.nome.localeCompare(b.produtos.nome))
+        .map(gs => {
+          const p = gs.produtos;
+          const preco = Number(gs.preco).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
           const plat = p.plataforma ? `[${p.plataforma.toUpperCase()}]` : "";
           
           return `**${p.nome}**\n└ 🏷️ ${plat} — **${preco}**`;

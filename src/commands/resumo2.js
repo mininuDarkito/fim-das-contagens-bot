@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, EmbedBuilder, AttachmentBuilder, PermissionFlagsBits } from "discord.js";
+import { SlashCommandBuilder, EmbedBuilder, AttachmentBuilder, PermissionFlagsBits, MessageFlags } from "discord.js";
 import prisma from "../../prisma/client.js";
 import ExcelJS from "exceljs";
 
@@ -30,7 +30,7 @@ export default {
 
   async execute(interaction) {
     const mesEscolhido = interaction.options.getString("mes");
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
     try {
       // 1. Validação de Admin no Banco Yakuza
@@ -86,7 +86,7 @@ export default {
 
       vendas.forEach(venda => {
         const produtoId = venda.produto.id;
-        const capituloNum = venda.quantidade;
+        const capituloNum = Number(venda.capitulo);
         const valor = Number(venda.preco_total || 0);
 
         if (!vendasPorProduto[produtoId]) {

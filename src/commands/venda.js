@@ -64,75 +64,80 @@ export default {
         return interaction.editReply(`❌ **Obra não encontrada:** "${produtoNome}" não existe no acervo global da Yakuza.`);
       }
 
-      // 4. Busca a configuração de preço (Vínculo)
-      let configuracao = await prisma.userSeries.findFirst({
-        where: { 
-          grupo_id: grupo.id,
-          produto_id: obraGlobal.id,
-          OR: [
-            { user_id: vendedor.id },
-            { user_id: grupo.user_id }
-          ],
-          ativo: true
-        },
-        orderBy: { user_id: 'asc' }
-      });
+      // 4. Busca a configuração de PREÇO (Grupo) e VÍNCULO (Usuário)
+      const [configuracaoPreco, vinculoUsuario] = await Promise.all([
+        prisma.grupo_series.findUnique({
+          where: { grupo_id_produto_id: { grupo_id: grupo.id, produto_id: obraGlobal.id } }
+        }),
+        prisma.userSerie.findUnique({
+          where: { user_id_produto_id_grupo_id: { user_id: vendedor.id, produto_id: obraGlobal.id, grupo_id: grupo.id } }
+        })
+      ]);
 
       let precoUnit = 0;
       let recemVinculado = false;
 
-      // --- LÓGICA INTELIGENTE DE VÍNCULO ---
-      if (!configuracao) {
-        // Se a obra não tá vinculada, VERIFICA se o cara passou o valor
+      // --- LÓGICA INTELIGENTE DE PREÇO E VÍNCULO ---
+      if (!configuracaoPreco) {
+        // Se a obra não tem preço no grupo, VERIFICA se o cara passou o valor
         if (!valorInput) {
-            return interaction.editReply(`⚠️ **Primeiro Lançamento:** Você ainda não vinculou **${obraGlobal.nome}** neste grupo.\n\nPor favor, repita o comando e preencha o campo opcional \`valor\` (ex: \`0,50\`). O bot fará o vínculo automático para as próximas vezes!`);
+            return interaction.editReply(`⚠️ **Configuração de Preço:** Esta obra ainda não tem um preço definido para este grupo.\n\nPor favor, repita o comando e preencha o campo opcional \`valor\` (ex: \`0,50\`). Isso definirá o preço para todos no grupo!`);
         }
 
-        // Formata o valor (aceita vírgula ou ponto)
+        // Formata o valor
         precoUnit = parseFloat(valorInput.replace(",", "."));
         if (isNaN(precoUnit) || precoUnit < 0) {
             return interaction.editReply("❌ **Valor Inválido:** O formato do preço está incorreto. Use números, como `0,50` ou `1.50`.");
         }
 
-        // Cria o vínculo no banco de dados na hora
-        configuracao = await prisma.userSeries.create({
+        // Cria a configuração de preço no grupo
+        await prisma.grupo_series.create({
             data: {
-                user_id: vendedor.id,
-                produto_id: obraGlobal.id,
                 grupo_id: grupo.id,
-                preco: precoUnit,
-                ativo: true
+                produto_id: obraGlobal.id,
+                preco: precoUnit
             }
         });
         recemVinculado = true;
       } else {
-        // Já tem vínculo, puxa o valor do banco (ignora se ele preencheu valor de bobeira)
-        precoUnit = Number(configuracao.preco);
+        precoUnit = Number(configuracaoPreco.preco);
+      }
+
+      // Garante que o usuário está vinculado (para aparecer no dashboard dele)
+      if (!vinculoUsuario) {
+        await prisma.userSerie.create({
+            data: {
+                user_id: vendedor.id,
+                produto_id: obraGlobal.id,
+                grupo_id: grupo.id,
+                ativo: true
+            }
+        });
       }
 
       // --- Lógica de Processamento de Capítulos ---
       let numeros = [];
       if (numeroInput.includes("-")) {
-        const [inicio, fim] = numeroInput.split("-").map(n => parseInt(n.trim()));
+        const [inicio, fim] = numeroInput.split("-").map(n => parseFloat(n.trim().replace(",", ".")));
         if (isNaN(inicio) || isNaN(fim) || fim < inicio) return interaction.editReply("❌ **Erro:** Intervalo de capítulos inválido.");
         for (let i = inicio; i <= fim; i++) numeros.push(i);
       } else {
-        const n = parseInt(numeroInput.trim());
+        const n = parseFloat(numeroInput.trim().replace(",", "."));
         if (isNaN(n)) return interaction.editReply("❌ **Erro:** Número do capítulo inválido.");
         numeros.push(n);
       }
 
-      // 5. Verificação de Duplicidade (Neste grupo)
+      // 5. Verificação de Duplicidade (Neste grupo) - Usando 'capitulo'
       const existentes = await prisma.venda.findMany({
         where: { 
           grupo_id: grupo.id, 
           produto_id: obraGlobal.id, 
-          quantidade: { in: numeros } 
+          capitulo: { in: numeros } 
         },
-        select: { quantidade: true }
+        select: { capitulo: true }
       });
 
-      const jaVendidos = existentes.map(v => v.quantidade);
+      const jaVendidos = existentes.map(v => Number(v.capitulo));
       const paraCriar = numeros.filter(n => !jaVendidos.includes(n));
 
       // 6. Registro das Vendas em Transação
@@ -143,7 +148,7 @@ export default {
               user_id: vendedor.id,
               produto_id: obraGlobal.id,
               grupo_id: grupo.id,
-              quantidade: n,
+              capitulo: n, // Corrigido de quantidade para capitulo
               preco_unitario: precoUnit,
               preco_total: precoUnit,
               data_venda: new Date(),
@@ -158,7 +163,7 @@ export default {
             user_id: vendedor.id,
             action: "venda_bot_lote",
             entity_type: "venda",
-            details: { obra: obraGlobal.nome, caps: paraCriar, grupo: grupo.nome, auto_vinculo: recemVinculado }
+            details: { obra: obraGlobal.nome, caps: paraCriar, grupo: grupo.nome, novo_preco_grupo: recemVinculado }
           }
         });
       }
@@ -182,12 +187,10 @@ export default {
 
       let descricao = `**Série:** ${obraGlobal.nome}\n**Grupo:** ${grupo.nome}`;
       
-      // Aviso elegante de que o bot fez o trabalho de vínculo sozinho
       if (recemVinculado) {
-        descricao += `\n\n✨ **Vínculo Automático:** A obra foi adicionada ao seu painel com o preço base de \`R$ ${precoUnit.toFixed(2)}\`. Nas próximas vendas, você não precisará informar o valor!`;
+        descricao += `\n\n✨ **Preço Definido:** O preço para este grupo foi configurado como \`R$ ${precoUnit.toFixed(2)}\`.`;
       } else if (valorInput && paraCriar.length > 0) {
-        // Se ele passou o valor atoa (já tava vinculado)
-        descricao += `\n\nℹ️ *O valor digitado foi ignorado pois esta série já está configurada no seu painel a \`R$ ${precoUnit.toFixed(2)}\`.*`;
+        descricao += `\n\nℹ️ *O valor digitado foi ignorado pois esta série já tem preço definido neste grupo (\`R$ ${precoUnit.toFixed(2)}\`).*`;
       }
       
       embed.setDescription(descricao);

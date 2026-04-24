@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } from "discord.js";
+import { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, MessageFlags } from "discord.js";
 import prisma from "../../prisma/client.js";
 import path from "path";
 import fs from "fs";
@@ -39,7 +39,7 @@ export default {
     const plataformaSlug = interaction.options.getString("plataforma");
     const valor = interaction.options.getNumber("valor");
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
     try {
       // 1. Identificação de Admin e Grupo
@@ -64,7 +64,7 @@ export default {
       const metadata = await scrapeFunc(url);
       if (!metadata || !metadata.nome) return interaction.editReply("❌ O scraper falhou ao extrair dados da obra.");
 
-      // 4. TRANSAÇÃO: Registro do Produto + Vínculo (Blindado)
+      // 4. TRANSAÇÃO: Registro do Produto + Preço + Vínculo (Blindado)
       const resultado = await prisma.$transaction(async (tx) => {
         const produto = await tx.produto.upsert({
           where: { nome: metadata.nome },
@@ -84,20 +84,36 @@ export default {
           }
         });
 
-        const vinculo = await tx.userSeries.upsert({
+        // Preço Global do Grupo
+        await tx.grupo_series.upsert({
+          where: {
+            grupo_id_produto_id: {
+              grupo_id: grupo.id,
+              produto_id: produto.id
+            }
+          },
+          update: { preco: valor, updated_at: new Date() },
+          create: {
+            grupo_id: grupo.id,
+            produto_id: produto.id,
+            preco: valor
+          }
+        });
+
+        // Vínculo do Usuário
+        const vinculo = await tx.userSerie.upsert({
           where: { 
-            unique_user_produto_grupo: { 
+            user_id_produto_id_grupo_id: { 
               user_id: admin.id, 
               produto_id: produto.id,
               grupo_id: grupo.id
             } 
           },
-          update: { preco: valor, ativo: true, updated_at: new Date() },
+          update: { ativo: true, updated_at: new Date() },
           create: { 
             user_id: admin.id, 
             produto_id: produto.id, 
             grupo_id: grupo.id, 
-            preco: valor, 
             ativo: true 
           }
         });
